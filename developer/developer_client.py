@@ -22,6 +22,30 @@ class DeveloperClient:
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((self.host, self.port))
+            
+            # === 發送握手 ===
+            handshake = {"client_type": "developer"}
+            send_frame(self.sock, json.dumps(handshake).encode('utf-8'))
+            
+            # 等待握手回應
+            response_raw = recv_frame(self.sock)
+            if not response_raw:
+                print("❌ 連線失敗: Server 無回應")
+                self.sock.close()
+                return False
+            
+            response = json.loads(response_raw.decode('utf-8'))
+            
+            if response["status"] != "success":
+                print(f"\n❌ 連線錯誤!\n")
+                print(response.get("message", "Unknown error"))
+                print("\n💡 提示: 請確認你使用的是 Developer Port，不是 Lobby Port")
+                self.sock.close()
+                return False
+            
+            print(f"✅ 已連線到 {response.get('server_type', 'Unknown')} Server")
+            # === 握手完成 ===
+            
             return True
         except Exception as e:
             print(f"❌ 連線失敗: {e}")
@@ -191,6 +215,7 @@ class DeveloperClient:
                 for i, game in enumerate(games, 1):
                     status_icon = "✅" if game["status"] == "active" else "❌"
                     print(f"  {i}. {status_icon} {game['game_name']}")
+                    print(f"     類型: {game.get('game_type', 'Unknown')}")
                     print(f"     版本: {game['version']}")
                     print(f"     狀態: {game['status']}")
                     print(f"     下載次數: {game['download_count']}")
@@ -221,22 +246,87 @@ class DeveloperClient:
         """上架新遊戲"""
         print("\n📤 上架新遊戲")
         
-        game_name = self.get_input("遊戲名稱")
+        # 遊戲名稱驗證
+        while True:
+            game_name = self.get_input("遊戲名稱")
+            if len(game_name) < 2:
+                print("❌ 遊戲名稱至少需要 2 個字元")
+                continue
+            if len(game_name) > 50:
+                print("❌ 遊戲名稱不能超過 50 個字元")
+                continue
+            # 檢查是否只包含空白
+            if game_name.strip() == "":
+                print("❌ 遊戲名稱不能只包含空白")
+                continue
+            break
         
         print("\n遊戲類型:")
         print("  1. CLI (命令列介面)")
         print("  2. GUI (圖形介面)")
         print("  3. Multiplayer (多人遊戲)")
-        game_type_choice = self.get_input("選擇類型 (1-3)")
-        game_type_map = {"1": "CLI", "2": "GUI", "3": "Multiplayer"}
-        game_type = game_type_map.get(game_type_choice, "CLI")
         
-        description = self.get_input("遊戲簡介")
-        max_players = int(self.get_input("最大玩家數", required=False) or "2")
-        version = self.get_input("版本號 (預設 1.0.0)", required=False) or "1.0.0"
+        # 遊戲類型驗證
+        while True:
+            game_type_choice = self.get_input("選擇類型 (1-3)")
+            if game_type_choice in ["1", "2", "3"]:
+                game_type_map = {"1": "CLI", "2": "GUI", "3": "Multiplayer"}
+                game_type = game_type_map[game_type_choice]
+                break
+            else:
+                print("❌ 請輸入 1, 2 或 3")
         
-        # 遊戲檔案路徑
-        game_dir = self.get_input("遊戲檔案目錄路徑")
+        # 遊戲簡介驗證
+        while True:
+            description = self.get_input("遊戲簡介")
+            if len(description) < 5:
+                print("❌ 遊戲簡介至少需要 5 個字元")
+                continue
+            if description.strip() == "":
+                print("❌ 遊戲簡介不能只包含空白")
+                continue
+            break
+        
+        # 最大玩家數驗證
+        while True:
+            max_players_input = self.get_input("最大玩家數", required=False) or "2"
+            try:
+                max_players = int(max_players_input)
+                if 1 <= max_players <= 100:
+                    break
+                print("❌ 玩家數必須在 1-100 之間")
+            except ValueError:
+                print("❌ 請輸入有效的數字")
+        
+        # 版本號驗證
+        while True:
+            version = self.get_input("版本號 (預設 1.0.0)", required=False) or "1.0.0"
+            parts = version.split('.')
+            if len(parts) == 3 and all(p.isdigit() for p in parts):
+                break
+            print("❌ 版本號格式錯誤，應為 x.x.x（例如 1.0.0）")
+        
+        # 遊戲檔案路徑驗證
+        while True:
+            game_dir = self.get_input("遊戲檔案目錄路徑")
+            
+            # 展開 ~ 為完整路徑
+            game_dir = os.path.expanduser(game_dir)
+            
+            # 驗證目錄
+            if not os.path.exists(game_dir):
+                print(f"❌ 目錄不存在: {game_dir}")
+                continue
+            
+            if not os.path.isdir(game_dir):
+                print(f"❌ 這不是一個目錄: {game_dir}")
+                continue
+            
+            if not os.listdir(game_dir):
+                print(f"❌ 目錄是空的: {game_dir}")
+                continue
+            
+            break
         
         print("\n📦 正在打包遊戲檔案...")
         game_files = self.pack_game_directory(game_dir)
@@ -248,15 +338,67 @@ class DeveloperClient:
         
         print(f"✅ 打包完成，大小: {len(game_files)} bytes (base64)")
         
-        # 設定檔
-        start_cmd = self.get_input("啟動命令 (例: python3 game_client.py)", required=False)
-        server_cmd = self.get_input("伺服器命令 (例: python3 game_server.py)", required=False)
+        # 設定檔 - 啟動命令
+        print("\n⚙️  遊戲配置")
+        print("提示: 啟動命令範例")
+        print("  Python: python3 game.py {host} {port}")
+        print("  C++: ./playerA {host} {port}")
+        
+        while True:
+            start_cmd = self.get_input("啟動命令 (Client)", required=False)
+            if not start_cmd:
+                print("⚠️  沒有啟動命令，玩家需要手動啟動")
+                break
+            
+            # 檢查是否包含 python3 或可執行檔
+            if not (start_cmd.startswith("python3 ") or start_cmd.startswith("./") or start_cmd.startswith("java ")):
+                print("❌ 啟動命令應該以 'python3 ', './' 或 'java ' 開頭")
+                print("   例如: python3 game.py {host} {port}")
+                continue
+            
+            # 檢查是否包含 {host} 和 {port}
+            if "{host}" not in start_cmd or "{port}" not in start_cmd:
+                print("❌ 啟動命令必須包含 {host} 和 {port} 占位符")
+                print("   例如: python3 game.py {host} {port}")
+                continue
+            
+            break
+        
+        # Server 命令
+        print("\n提示: Server 命令範例")
+        print("  Python: python3 server_game.py {port}")
+        print("  C++: ./lobby_server {port}")
+        
+        while True:
+            server_cmd = self.get_input("伺服器命令 (如果沒有 Server 可留空)", required=False)
+            if not server_cmd:
+                print("⚠️  此遊戲沒有 Server（純 Client 遊戲）")
+                break
+            
+            # 檢查是否包含 python3 或可執行檔
+            if not (server_cmd.startswith("python3 ") or server_cmd.startswith("./") or server_cmd.startswith("java ")):
+                print("❌ Server 命令應該以 'python3 ', './' 或 'java ' 開頭")
+                print("   例如: python3 server_game.py {port}")
+                continue
+            
+            # 檢查是否包含 {port}
+            if "{port}" not in server_cmd:
+                print("❌ Server 命令必須包含 {port} 占位符")
+                print("   例如: python3 server_game.py {port}")
+                continue
+            
+            break
+        
+        # 編譯命令（C++ 遊戲）
+        compile_cmd = self.get_input("編譯命令 (C++ 遊戲才需要，例如: make)", required=False)
         
         config = {}
         if start_cmd:
             config["start_command"] = start_cmd
         if server_cmd:
             config["server_command"] = server_cmd
+        if compile_cmd:
+            config["compile"] = compile_cmd
         
         print("\n⏳ 上傳中...")
         
@@ -319,11 +461,59 @@ class DeveloperClient:
         """下架遊戲"""
         print("\n🗑️  下架遊戲")
         
-        game_name = self.get_input("要下架的遊戲名稱")
+        # 先取得遊戲列表
+        response = self.send_request("list_my_games", {})
         
-        confirm = self.get_input(f"確定要下架 '{game_name}' 嗎? (yes/no)")
+        if response["status"] != "success":
+            print(f"❌ 無法取得遊戲列表: {response.get('message', '')}")
+            input("\n按 Enter 繼續...")
+            return
         
-        if confirm.lower() != "yes":
+        games = response["data"]["games"]
+        
+        if not games:
+            print("  你還沒有上架任何遊戲")
+            input("\n按 Enter 繼續...")
+            return
+        
+        # 顯示遊戲列表
+        print(f"\n你的遊戲 (共 {len(games)} 款):\n")
+        for i, game in enumerate(games, 1):
+            status_icon = "✅" if game["status"] == "active" else "❌"
+            print(f"  {i}. {status_icon} {game['game_name']} (v{game['version']})")
+            
+            # 使用 .get() 防止 KeyError
+            game_type = game.get('game_type', 'Unknown')
+            download_count = game.get('download_count', 0)
+            average_rating = game.get('average_rating', 0.0)
+            
+            print(f"     {game_type} | 下載: {download_count} 次 | 評分: {average_rating:.1f}/5.0")
+            print()
+        
+        print("  0. 取消")
+        
+        # 選擇遊戲
+        while True:
+            choice = self.get_input(f"請選擇要下架的遊戲 (0-{len(games)})", required=False)
+            if not choice:
+                continue
+            
+            try:
+                choice_num = int(choice)
+                if choice_num == 0:
+                    return
+                if 1 <= choice_num <= len(games):
+                    game_name = games[choice_num - 1]['game_name']
+                    break
+                else:
+                    print(f"❌ 請輸入 0-{len(games)}")
+            except ValueError:
+                print("❌ 請輸入數字")
+        
+        # 確認
+        confirm = self.get_input(f"確定要下架 '{game_name}' 嗎? (yes/no)", required=False) or "no"
+        
+        if confirm.lower() not in ["yes", "y"]:
             print("❌ 已取消")
             input("按 Enter 繼續...")
             return

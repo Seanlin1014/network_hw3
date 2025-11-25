@@ -37,6 +37,10 @@ os.makedirs("game_store_data", exist_ok=True)
 games_lock = threading.Lock()
 reviews_lock = threading.Lock()
 
+# 線上玩家追蹤（防止重複登入）
+online_players = {}  # {username: (conn, addr)}
+online_players_lock = threading.Lock()
+
 # 資料庫連線資訊
 DB_HOST = "localhost"
 DB_PORT = None  # 從命令列參數設定
@@ -374,6 +378,39 @@ def handle_list_rooms():
         return {
             "status": "success",
             "data": {"rooms": room_list}
+        }
+
+
+def handle_get_room_status(data, player_name):
+    """查詢房間狀態（即時更新）"""
+    room_id = data.get("room_id")
+    
+    if not room_id:
+        return {"status": "error", "message": "Missing room_id"}
+    
+    with rooms_lock:
+        if room_id not in rooms:
+            return {"status": "error", "message": "Room not found or has been closed"}
+        
+        room = rooms[room_id]
+        
+        # 檢查玩家是否在房間內
+        if player_name not in room["players"]:
+            return {"status": "error", "message": "You are not in this room"}
+        
+        return {
+            "status": "success",
+            "data": {
+                "room_id": room_id,
+                "game_name": room["game_name"],
+                "version": room["version"],
+                "host": room["host"],
+                "players": room["players"],
+                "current_players": len(room["players"]),
+                "max_players": room["max_players"],
+                "status": room["status"],
+                "is_host": (player_name == room["host"])
+            }
         }
 
 
@@ -739,6 +776,44 @@ def handle_developer_client(conn, addr):
     developer_name = None
     
     try:
+        # === 握手驗證 ===
+        # 等待 Client 發送身份標識
+        raw = recv_frame(conn)
+        if not raw:
+            print(f"[Developer] No handshake from {addr}")
+            conn.close()
+            return
+        
+        try:
+            handshake = json.loads(raw.decode('utf-8'))
+            client_type = handshake.get("client_type")
+            
+            # 檢查身份
+            if client_type != "developer":
+                error_msg = {
+                    "status": "error",
+                    "message": "❌ 這是 Developer Server！你連到了錯誤的 Port。\n請使用 Developer Client 連線，或改用 Lobby Port。"
+                }
+                send_frame(conn, json.dumps(error_msg).encode('utf-8'))
+                print(f"[Developer] Wrong client type '{client_type}' from {addr}, closing connection")
+                conn.close()
+                return
+            
+            # 發送確認
+            handshake_response = {
+                "status": "success",
+                "message": "Connected to Developer Server",
+                "server_type": "developer"
+            }
+            send_frame(conn, json.dumps(handshake_response).encode('utf-8'))
+            print(f"[Developer] Handshake successful with {addr}")
+        
+        except json.JSONDecodeError:
+            print(f"[Developer] Invalid handshake from {addr}")
+            conn.close()
+            return
+        # === 握手驗證結束 ===
+        
         while True:
             raw = recv_frame(conn)
             if not raw:
@@ -773,6 +848,14 @@ def handle_developer_client(conn, addr):
                 elif action == "list_my_games":
                     response = handle_list_my_games(developer_name)
                 
+                # 檢查是否為 Player action（錯誤連線）
+                elif action in ["register", "list_games", "download_game", "create_room", 
+                              "join_room", "leave_room", "start_game", "get_room_status", "list_rooms"]:
+                    response = {
+                        "status": "error", 
+                        "message": "❌ 這是 Developer Server！請使用 Lobby Port 連線。"
+                    }
+                
                 else:
                     response = {"status": "error", "message": f"Unknown action: {action}"}
                 
@@ -798,6 +881,44 @@ def handle_lobby_client(conn, addr):
     player_name = None
     
     try:
+        # === 握手驗證 ===
+        # 等待 Client 發送身份標識
+        raw = recv_frame(conn)
+        if not raw:
+            print(f"[Lobby] No handshake from {addr}")
+            conn.close()
+            return
+        
+        try:
+            handshake = json.loads(raw.decode('utf-8'))
+            client_type = handshake.get("client_type")
+            
+            # 檢查身份
+            if client_type != "player":
+                error_msg = {
+                    "status": "error",
+                    "message": "❌ 這是 Lobby Server（玩家用）！你連到了錯誤的 Port。\n請使用 Player Client 連線，或改用 Developer Port。"
+                }
+                send_frame(conn, json.dumps(error_msg).encode('utf-8'))
+                print(f"[Lobby] Wrong client type '{client_type}' from {addr}, closing connection")
+                conn.close()
+                return
+            
+            # 發送確認
+            handshake_response = {
+                "status": "success",
+                "message": "Connected to Lobby Server",
+                "server_type": "lobby"
+            }
+            send_frame(conn, json.dumps(handshake_response).encode('utf-8'))
+            print(f"[Lobby] Handshake successful with {addr}")
+        
+        except json.JSONDecodeError:
+            print(f"[Lobby] Invalid handshake from {addr}")
+            conn.close()
+            return
+        # === 握手驗證結束 ===
+        
         while True:
             raw = recv_frame(conn)
             if not raw:
@@ -817,11 +938,79 @@ def handle_lobby_client(conn, addr):
                 elif action == "get_game_info":
                     response = handle_get_game_info(data)
                 
-                # 需要登入的操作
+                # 註冊和登入
+                elif action == "register":
+                    username = data.get("username")
+                    password = data.get("password")
+                    
+                    if not username or not password:
+                        response = {"status": "error", "message": "Missing username or password"}
+                    else:
+                        try:
+                            # 連線到 DB Server 註冊
+                            db_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            db_sock.connect(("localhost", DB_PORT))
+                            
+                            db_request = {
+                                "collection": "Player",
+                                "action": "create",
+                                "data": {"name": username, "password": password}
+                            }
+                            
+                            send_frame(db_sock, json.dumps(db_request).encode('utf-8'))
+                            db_response = json.loads(recv_frame(db_sock).decode('utf-8'))
+                            db_sock.close()
+                            
+                            response = db_response
+                            if response["status"] == "success":
+                                print(f"[Lobby] Player {username} registered from {addr}")
+                        
+                        except Exception as e:
+                            response = {"status": "error", "message": f"Register failed: {str(e)}"}
+                
                 elif action == "login":
-                    # 向 DB 驗證玩家帳號
-                    response = {"status": "success", "message": "Login feature TBD"}
-                    player_name = data.get("username")
+                    username = data.get("username")
+                    password = data.get("password")
+                    
+                    if not username or not password:
+                        response = {"status": "error", "message": "Missing username or password"}
+                    else:
+                        try:
+                            # 連線到 DB Server 驗證
+                            db_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            db_sock.connect(("localhost", DB_PORT))
+                            
+                            db_request = {
+                                "collection": "Player",
+                                "action": "query",
+                                "data": {
+                                    "type": "login",
+                                    "name": username,
+                                    "password": password
+                                }
+                            }
+                            
+                            send_frame(db_sock, json.dumps(db_request).encode('utf-8'))
+                            db_response = json.loads(recv_frame(db_sock).decode('utf-8'))
+                            db_sock.close()
+                            
+                            if db_response["status"] == "success":
+                                # 檢查是否已經登入
+                                with online_players_lock:
+                                    if username in online_players:
+                                        response = {"status": "error", "message": "此帳號已在其他地方登入"}
+                                        print(f"[Lobby] Login rejected: {username} already online")
+                                    else:
+                                        # 記錄線上玩家
+                                        online_players[username] = (conn, addr)
+                                        player_name = username
+                                        response = {"status": "success", "message": "Login successful"}
+                                        print(f"[Lobby] Player {username} logged in from {addr}")
+                            else:
+                                response = {"status": "error", "message": "Invalid username or password"}
+                        
+                        except Exception as e:
+                            response = {"status": "error", "message": f"Login failed: {str(e)}"}
                 
                 elif not player_name:
                     response = {"status": "error", "message": "Please login first"}
@@ -839,6 +1028,9 @@ def handle_lobby_client(conn, addr):
                 elif action == "list_rooms":
                     response = handle_list_rooms()
                 
+                elif action == "get_room_status":
+                    response = handle_get_room_status(data, player_name)
+                
                 elif action == "join_room":
                     response = handle_join_room(data, player_name)
                 
@@ -847,6 +1039,13 @@ def handle_lobby_client(conn, addr):
                 
                 elif action == "start_game":
                     response = handle_start_game(data, player_name)
+                
+                # 檢查是否為 Developer action（錯誤連線）
+                elif action in ["upload_game", "update_game", "remove_game", "list_my_games"]:
+                    response = {
+                        "status": "error", 
+                        "message": "❌ 這是 Lobby Server（玩家用）！請使用 Developer Port 連線。"
+                    }
                 
                 else:
                     response = {"status": "error", "message": f"Unknown action: {action}"}
@@ -861,6 +1060,13 @@ def handle_lobby_client(conn, addr):
         print(f"[Lobby] Error with {addr}: {e}")
     
     finally:
+        # 移除線上玩家記錄
+        if player_name:
+            with online_players_lock:
+                if player_name in online_players:
+                    del online_players[player_name]
+                    print(f"[Lobby] Player {player_name} logged out")
+        
         conn.close()
         print(f"[Lobby] Disconnected from {addr}")
 
