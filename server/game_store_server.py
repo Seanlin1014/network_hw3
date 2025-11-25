@@ -340,10 +340,11 @@ def handle_create_room(data, player_name):
         rooms[room_id] = {
             "room_id": room_id,
             "game_name": game_name,
+            "version": game_info["version"],  # ← 新增：加入版本資訊
             "host": player_name,
             "players": [player_name],
             "max_players": game_info["max_players"],
-            "status": "waiting",  # waiting / playing / finished
+            "status": "waiting",
             "created_at": time.time(),
             "game_server_port": None
         }
@@ -398,12 +399,24 @@ def handle_get_room_status(data, player_name):
         if player_name not in room["players"]:
             return {"status": "error", "message": "You are not in this room"}
         
+        # 安全地獲取 version，如果沒有則從 metadata 中獲取
+        version = room.get("version", "1.0.0")
+        if not version or version == "1.0.0":
+            # 嘗試從 game metadata 獲取最新版本
+            try:
+                with games_lock:
+                    games_metadata = load_json_file(GAME_METADATA_FILE, {})
+                    if room["game_name"] in games_metadata:
+                        version = games_metadata[room["game_name"]]["version"]
+            except:
+                version = "1.0.0"
+        
         return {
             "status": "success",
             "data": {
                 "room_id": room_id,
                 "game_name": room["game_name"],
-                "version": room["version"],
+                "version": version,
                 "host": room["host"],
                 "players": room["players"],
                 "current_players": len(room["players"]),
@@ -1050,14 +1063,25 @@ def handle_lobby_client(conn, addr):
                 else:
                     response = {"status": "error", "message": f"Unknown action: {action}"}
                 
+                print(f"[Lobby] Response to {addr}: {response.get('status')}")
                 send_frame(conn, json.dumps(response).encode('utf-8'))
-            
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                print(f"[Lobby] JSON decode error from {addr}: {e}")
                 response = {"status": "error", "message": "Invalid JSON"}
+                send_frame(conn, json.dumps(response).encode('utf-8'))
+
+            except Exception as e:
+                # 新增：捕獲並記錄所有異常
+                print(f"[Lobby] Error processing request from {addr}: {e}")
+                import traceback
+                traceback.print_exc()
+                response = {"status": "error", "message": f"Internal error: {str(e)}"}
                 send_frame(conn, json.dumps(response).encode('utf-8'))
     
     except Exception as e:
         print(f"[Lobby] Error with {addr}: {e}")
+        import traceback
+        traceback.print_exc()
     
     finally:
         # 移除線上玩家記錄

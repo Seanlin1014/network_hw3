@@ -667,35 +667,37 @@ class LobbyClient:
     
     def leave_room(self):
         """離開房間"""
-        print(f"\n🚪 房間選單 - {self.current_room}")
-        
-        print("\n選項:")
-        print("  1. 查詢房間狀態")
-        print("  2. 啟動遊戲（房主專用）")
-        print("  3. 離開房間")
-        print("  0. 返回主選單")
-        
-        choice = self.get_input("請選擇", required=False)
-        
-        if choice == "1":
-            self.check_room_status()
-        elif choice == "2":
-            self.start_game()
-        elif choice == "3":
-            response = self.send_request("leave_room", {"room_id": self.current_room})
+        while self.current_room:  # 加入 while 迴圈
+            print(f"\n🚪 房間選單 - {self.current_room}")
             
-            if response["status"] == "success":
-                print(f"✅ {response.get('message', '')}")
-                self.current_room = None
+            print("\n選項:")
+            print("  1. 查詢房間狀態")
+            print("  2. 啟動遊戲（房主專用）")
+            print("  3. 離開房間")
+            print("  0. 返回主選單")
+            
+            choice = self.get_input("請選擇", required=False)
+            
+            if choice == "1":
+                self.check_room_status()
+            elif choice == "2":
+                self.start_game()
+            elif choice == "3":
+                response = self.send_request("leave_room", {"room_id": self.current_room})
+                
+                if response["status"] == "success":
+                    print(f"✅ {response.get('message', '')}")
+                    self.current_room = None
+                else:
+                    print(f"❌ 離開房間失敗: {response.get('message', '')}")
+                
+                input("\n按 Enter 繼續...")
+                break  # 離開房間後跳出迴圈
+            elif choice == "0":
+                break  # 返回主選單
             else:
-                print(f"❌ 離開房間失敗: {response.get('message', '')}")
-            
-            input("\n按 Enter 繼續...")
-        elif choice == "0":
-            return
-        else:
-            print("❌ 無效的選項")
-            input("\n按 Enter 繼續...")
+                print("❌ 無效的選項")
+                input("\n按 Enter 繼續...")
     
     def start_game(self):
         """啟動遊戲"""
