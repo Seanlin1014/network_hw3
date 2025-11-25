@@ -11,8 +11,25 @@
   - Developer Server: 處理遊戲上架/更新/下架
   - Lobby Server: 處理玩家大廳、房間、下載
 - `lpfp.py` - 通訊協定（Length-Prefixed Framing Protocol）
-- `start_game_store.sh` - 啟動腳本
-- `stop_game_store.sh` - 停止腳本
+- `start_servers.py` - 啟動腳本（Python）
+- `stop_servers.py` - 停止腳本（Python）
+
+## 系統架構
+
+### Server 端統一部署
+所有 Server 都部署在系計 Linux 機器上：
+
+```
+Server 端（系計機器）
+├── DB Server           # 帳號管理
+├── Developer Server    # 遊戲上架/更新/下架
+├── Lobby Server        # 大廳與房間管理
+└── Game Servers        # 由 Lobby Server 動態啟動
+    ├── Tetris Server   # 當有人建立 Tetris 房間時啟動
+    └── Tic-Tac-Toe Server  # 當有人建立 Tic-Tac-Toe 房間時啟動
+```
+
+**重要**：Game Server（遊戲的 Server）也在系計機器上執行，由 Lobby Server 負責啟動和管理。玩家不需要自己啟動 Game Server。
 
 ## 部署步驟
 
@@ -22,8 +39,7 @@
 
 ### 2. 啟動 Server
 ```bash
-chmod +x start_game_store.sh stop_game_store.sh
-./start_game_store.sh
+python3 start_servers.py
 ```
 
 Server 會自動啟動三個服務：
@@ -33,7 +49,7 @@ Server 會自動啟動三個服務：
 
 ### 3. 停止 Server
 ```bash
-./stop_game_store.sh
+python3 stop_servers.py
 ```
 
 ### 4. 查看日誌

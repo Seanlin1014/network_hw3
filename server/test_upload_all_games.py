@@ -138,8 +138,8 @@ def main():
             'version': '1.0.0',
             'dir': 'tictactoe_game',
             'config': {
-                'start_command': 'make && ./playerA 127.0.0.1 15555',
-                'server_command': './lobby_server 15555',
+                'start_command': './playerA {host} {port}',
+                'server_command': './lobby_server {port}',
                 'compile': 'make'
             }
         })
@@ -154,8 +154,8 @@ def main():
             'version': '1.0.0',
             'dir': 'tetris_game',
             'config': {
-                'start_command': 'python3 game.py',
-                'server_command': 'python3 server.py'
+                'start_command': 'python3 game.py {host} {port}',
+                'server_command': 'python3 server_game.py {port}'
             }
         })
     
