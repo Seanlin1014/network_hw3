@@ -4,7 +4,6 @@ import pygame
 import sys
 import time
 import socket
-import json
 import threading
 from lpfp import send_frame, recv_frame
 from protocol import encode_message, decode_message
@@ -725,69 +724,3 @@ class SpectatorMode:
         # 最後才關閉 pygame
         pygame.quit()
         print("[Spectator] Exiting spectator mode, returning to lobby")
-
-# ============================================================
-# 主程式入口點
-# ============================================================
-
-def main():
-    """主程式入口"""
-    if len(sys.argv) < 3:
-        print("Usage: python3 game.py <host> <port>")
-        print("Example: python3 game.py localhost 12345")
-        sys.exit(1)
-    
-    host = sys.argv[1]
-    port = int(sys.argv[2])
-    
-    # 連接到遊戲伺服器
-    try:
-        print(f"[Client] Connecting to Game Server at {host}:{port}...")
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((host, port))
-        print(f"[Client] Connected successfully!")
-        
-        # 發送加入請求
-        username = "Player"
-        join_request = {
-            "action": "join",
-            "player_name": username
-        }
-        send_frame(sock, json.dumps(join_request).encode('utf-8'))
-        
-        # 接收回應
-        response_raw = recv_frame(sock)
-        if not response_raw:
-            print("[Client] No response from server")
-            sys.exit(1)
-        
-        response = json.loads(response_raw.decode('utf-8'))
-        print(f"[Client] Server response: {response}")
-        
-        if response.get("status") != "success":
-            print(f"[Client] Failed to join: {response.get('message')}")
-            sys.exit(1)
-        
-        print(f"[Client] Successfully joined game!")
-        
-        # 啟動遊戲
-        game = TetrisGame(conn=sock, username=username)
-        game.run()
-        
-        # 關閉連線
-        sock.close()
-        print("[Client] Game ended, connection closed")
-        
-    except ConnectionRefusedError:
-        print(f"[Client] ❌ Cannot connect to {host}:{port}")
-        print("[Client] Please make sure the Game Server is running")
-        sys.exit(1)
-    except Exception as e:
-        print(f"[Client] ❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

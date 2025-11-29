@@ -27,6 +27,7 @@ class LobbyClient:
         """連線到 Lobby Server"""
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(30.0)  # 設置 30 秒超時
             self.sock.connect((self.host, self.lobby_port))
             
             # === 發送握手 ===
@@ -60,6 +61,10 @@ class LobbyClient:
     def send_request(self, action, data):
         """發送請求"""
         try:
+            # 檢查 socket 是否還連接
+            if not self.sock:
+                return {"status": "error", "message": "Not connected to server"}
+            
             request = {"action": action, "data": data}
             send_frame(self.sock, json.dumps(request).encode('utf-8'))
             
@@ -68,6 +73,10 @@ class LobbyClient:
                 return json.loads(response_raw.decode('utf-8'))
             else:
                 return {"status": "error", "message": "No response from server"}
+        except (BrokenPipeError, ConnectionResetError, OSError) as e:
+            return {"status": "error", "message": f"Connection lost: {e}"}
+        except socket.timeout:
+            return {"status": "error", "message": "Request timeout"}
         except Exception as e:
             return {"status": "error", "message": str(e)}
     
@@ -456,6 +465,14 @@ class LobbyClient:
         """建立房間"""
         print("\n🏗️  建立房間")
         
+        # 檢查是否已在房間
+        if self.current_room:
+            print("❌ 你已經在房間內了！")
+            print(f"   當前房間: {self.current_room}")
+            print("   請先離開房間（選項 9）才能建立新房間")
+            input("\n按 Enter 繼續...")
+            return
+        
         # 取得已下載的遊戲
         player_dir = os.path.join(self.downloads_dir, self.username)
         
@@ -528,6 +545,14 @@ class LobbyClient:
     def join_room(self):
         """加入房間"""
         print("\n🚪 加入房間")
+        
+        # 檢查是否已在房間
+        if self.current_room:
+            print("❌ 你已經在房間內了！")
+            print(f"   當前房間: {self.current_room}")
+            print("   請先離開房間（選項 9）才能加入其他房間")
+            input("\n按 Enter 繼續...")
+            return
         
         # 取得已下載的遊戲清單
         player_dir = os.path.join(self.downloads_dir, self.username)
@@ -625,7 +650,13 @@ class LobbyClient:
         
         response = self.send_request("get_room_status", {"room_id": self.current_room})
         
-        if response["status"] == "success":
+        if not response:
+            print("❌ 查詢失敗: 無法連接到 Server")
+            print("💡 請檢查網路連線或重新登入")
+            input("\n按 Enter 繼續...")
+            return
+        
+        if response.get("status") == "success":
             data = response["data"]
             
             print("\n" + "="*60)
@@ -658,10 +689,63 @@ class LobbyClient:
                 print(f"\n💡 你是房主，可以啟動遊戲")
             else:
                 print(f"\n💡 等待房主啟動遊戲")
+
+            # 檢查遊戲是否已啟動
+            if data.get('status') == 'playing' and data.get('server_port'):
+                print(f"\n🎮 遊戲已啟動！")
+                print(f"   Game Server: {self.host}:{data['server_port']}")
+                
+                # 詢問是否加入遊戲
+                join = self.get_input("\n是否加入遊戲? (yes/no)", required=False) or "no"
+                
+                if join.lower() in ["yes", "y"]:
+                    # 啟動遊戲客戶端
+                    config = data.get("config", {})
+                    start_cmd = config.get("start_command", "")
+                    
+                    if start_cmd:
+                        game_name = data['game_name']
+                        player_dir = os.path.join(self.downloads_dir, self.username)
+                        game_dir = os.path.join(player_dir, game_name)
+                        
+                        if os.path.exists(game_dir):
+                            server_host = self.host
+                            server_port = data['server_port']
+                            start_cmd = start_cmd.replace("{host}", server_host)
+                            start_cmd = start_cmd.replace("{port}", str(server_port))
+                            
+                            print(f"\n啟動命令: {start_cmd}")
+                            print(f"工作目錄: {game_dir}")
+                            
+                            try:
+                                import subprocess
+                                subprocess.Popen(
+                                    start_cmd,
+                                    shell=True,
+                                    cwd=game_dir
+                                )
+                                print("✅ 遊戲已啟動！")
+                                self.current_room = None  # 離開房間
+                            except Exception as e:
+                                print(f"❌ 啟動失敗: {e}")
+                        else:
+                            print(f"❌ 找不到遊戲檔案: {game_dir}")
+                            print(f"請先下載遊戲")
+                    else:
+                        print("⚠️  此遊戲沒有自動啟動命令")
             
             print("="*60)
         else:
-            print(f"❌ 查詢失敗: {response.get('message', '')}")
+            print(f"❌ 查詢失敗: {response.get('message', 'Unknown error')}")
+            
+            # 檢查是否是連線問題
+            if "No response" in response.get('message', ''):
+                print("\n💡 可能的原因:")
+                print("   - Server 連線中斷")
+                print("   - 網路問題")
+                print("   建議: 返回主選單並重新登入")
+        
+        input("\n按 Enter 繼續...")
         
         input("\n按 Enter 繼續...")
     
@@ -686,13 +770,25 @@ class LobbyClient:
                 response = self.send_request("leave_room", {"room_id": self.current_room})
                 
                 if response["status"] == "success":
-                    print(f"✅ {response.get('message', '')}")
+                    data = response.get("data", {})
+                    disbanded = data.get("disbanded", False)
+                    
+                    if disbanded:
+                        remaining_players = data.get("remaining_players", [])
+                        if remaining_players:
+                            print(f"⚠️  房間已解散（房主離開）")
+                            print(f"   剩餘玩家 ({len(remaining_players)} 人): {', '.join(remaining_players)}")
+                        else:
+                            print(f"✅ 房間已解散")
+                    else:
+                        print(f"✅ {response.get('message', '')}")
+                    
                     self.current_room = None
                 else:
                     print(f"❌ 離開房間失敗: {response.get('message', '')}")
                 
                 input("\n按 Enter 繼續...")
-                break  # 離開房間後跳出迴圈
+                break
             elif choice == "0":
                 break  # 返回主選單
             else:
@@ -714,7 +810,8 @@ class LobbyClient:
             print(f"   玩家: {', '.join(data['players'])}")
             
             # 取得 Game Server 資訊
-            server_host = data.get("server_host", "localhost")
+            # 使用連接 Lobby Server 的 host，因為 Game Server 也在同一台機器上
+            server_host = data.get("server_host", self.host)
             server_port = data.get("server_port")
             
             if server_port:
@@ -751,46 +848,152 @@ class LobbyClient:
                                 cwd=game_dir
                             )
                             print("✅ 遊戲已啟動！")
+                            # 只在真正啟動遊戲後才清空房間
+                            self.current_room = None
                         except Exception as e:
                             print(f"❌ 啟動失敗: {e}")
                             print(f"\n請手動執行:")
                             print(f"  cd {game_dir}")
                             print(f"  {start_cmd}")
+                            # 啟動失敗，保留在房間內
                     else:
                         print(f"\n請手動執行:")
                         print(f"  cd {game_dir}")
                         print(f"  {start_cmd}")
+                        # 用戶選擇手動啟動，也清空房間（假設他們會去手動執行）
+                        self.current_room = None
                 else:
                     print(f"\n❌ 找不到遊戲檔案: {game_dir}")
                     print(f"請先下載遊戲")
+                    # 找不到遊戲，保留在房間內
             else:
                 print("\n⚠️  此遊戲沒有自動啟動命令")
                 print("請查看遊戲目錄手動啟動")
-            
-            self.current_room = None
+                # 沒有啟動命令，保留在房間內
         else:
             print(f"❌ 啟動遊戲失敗: {response.get('message', '')}")
+            # 啟動失敗，保留在房間內
         
         input("\n按 Enter 繼續...")
     
     def run(self):
-        """執行 Client"""
-        self.clear_screen()
-        print("\n" + "="*60)
-        print("  🎮 Game Store - Lobby Client")
-        print("="*60)
-        
+        """主程式流程"""
+        # 1. 連線到 Lobby Server
         if not self.connect():
             return
         
-        print("✅ 已連線到 Lobby Server")
+        # 2. 登入/註冊
+        if not self.login_menu():
+            print("👋 再見！")
+            return
         
-        if self.login_menu():
-            self.main_menu()
+        # 3. 進入主選單
+        self.main_menu()
         
-        self.sock.close()
-        print("\n👋 再見！")
+        # 4. 關閉連線
+        if self.sock:
+            self.sock.close()
+        
+        print("👋 再見！")
 
+
+# 在 lobby_client.py 的 LobbyClient 類別中加入以下函數
+
+    def delete_downloaded_game(self):
+        """刪除已下載的遊戲"""
+        print("\n🗑️  刪除遊戲")
+        print("=" * 60)
+        
+        # 確認下載目錄
+        player_dir = os.path.join(self.downloads_dir, self.username)
+        
+        if not os.path.exists(player_dir):
+            print("❌ 你還沒有下載任何遊戲")
+            input("\n按 Enter 繼續...")
+            return
+        
+        # 列出已下載的遊戲
+        games = []
+        try:
+            for game_name in os.listdir(player_dir):
+                game_path = os.path.join(player_dir, game_name)
+                if os.path.isdir(game_path):
+                    # 計算目錄大小
+                    total_size = 0
+                    for dirpath, dirnames, filenames in os.walk(game_path):
+                        for filename in filenames:
+                            filepath = os.path.join(dirpath, filename)
+                            try:
+                                total_size += os.path.getsize(filepath)
+                            except:
+                                pass
+                    
+                    size_mb = round(total_size / (1024 * 1024), 2)
+                    games.append((game_name, size_mb, game_path))
+        except Exception as e:
+            print(f"❌ 無法讀取遊戲目錄: {e}")
+            input("\n按 Enter 繼續...")
+            return
+        
+        if not games:
+            print("❌ 你還沒有下載任何遊戲")
+            input("\n按 Enter 繼續...")
+            return
+        
+        # 顯示遊戲列表
+        print(f"\n已下載的遊戲 (共 {len(games)} 款):\n")
+        total_size = sum(size for _, size, _ in games)
+        
+        for i, (game_name, size, _) in enumerate(games, 1):
+            print(f"  {i}. {game_name}")
+            print(f"     大小: {size} MB")
+            print()
+        
+        print(f"  總計: {total_size:.2f} MB")
+        print("\n  0. 取消")
+        
+        # 選擇要刪除的遊戲
+        while True:
+            choice = self.get_input(f"請選擇要刪除的遊戲 (0-{len(games)})", required=False)
+            if not choice:
+                continue
+            
+            try:
+                idx = int(choice)
+                if idx == 0:
+                    return
+                if 1 <= idx <= len(games):
+                    game_name, size, game_path = games[idx - 1]
+                    break
+                else:
+                    print(f"❌ 請輸入 0-{len(games)}")
+            except ValueError:
+                print("❌ 請輸入數字")
+        
+        # 確認刪除
+        print(f"\n⚠️  刪除確認")
+        print(f"   遊戲名稱: {game_name}")
+        print(f"   檔案大小: {size} MB")
+        print(f"   刪除後可釋放: {size} MB 空間")
+        print()
+        
+        confirm = self.get_input("確定要刪除嗎？輸入 'yes' 確認", required=False)
+        
+        if confirm.lower() != "yes":
+            print("\n❌ 已取消刪除")
+            input("\n按 Enter 繼續...")
+            return
+        
+        # 執行刪除
+        try:
+            import shutil
+            shutil.rmtree(game_path)
+            print(f"\n✅ 遊戲 '{game_name}' 已成功刪除")
+            print(f"   已釋放 {size} MB 空間")
+        except Exception as e:
+            print(f"\n❌ 刪除失敗: {e}")
+        
+        input("\n按 Enter 繼續...")
 
 def main():
     if len(sys.argv) < 3:

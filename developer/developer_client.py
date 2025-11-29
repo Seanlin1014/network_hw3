@@ -79,9 +79,15 @@ class DeveloperClient:
         print("="*60)
     
     def get_input(self, prompt, required=True):
-        """取得使用者輸入"""
+        """取得使用者輸入，自動轉換全形括號為半形"""
         while True:
             value = input(f"{prompt}: ").strip()
+            
+            # 自動轉換全形括號為半形
+            if value:
+                value = value.replace('｛', '{').replace('｝', '}')
+                value = value.replace('（', '(').replace('）', ')')
+            
             if value or not required:
                 return value
             print("❌ 此欄位必填，請重新輸入")
@@ -357,9 +363,15 @@ class DeveloperClient:
                 continue
             
             # 檢查是否包含 {host} 和 {port}
-            if "{host}" not in start_cmd or "{port}" not in start_cmd:
+            has_host = "{host}" in start_cmd
+            has_port = "{port}" in start_cmd
+            
+            if not has_host or not has_port:
                 print("❌ 啟動命令必須包含 {host} 和 {port} 占位符")
-                print("   例如: python3 game.py {host} {port}")
+                print(f"   偵測到: {{host}}={has_host}, {{port}}={has_port}")
+                print(f"   你輸入的: {repr(start_cmd)}")
+                print("   正確範例: python3 game.py {host} {port}")
+                print("   提示: 請使用半形括號 {} 而非全形括號 ｛｝")
                 continue
             
             break
@@ -382,9 +394,14 @@ class DeveloperClient:
                 continue
             
             # 檢查是否包含 {port}
-            if "{port}" not in server_cmd:
+            has_port = "{port}" in server_cmd
+            
+            if not has_port:
                 print("❌ Server 命令必須包含 {port} 占位符")
-                print("   例如: python3 server_game.py {port}")
+                print(f"   偵測到: {{port}}={has_port}")
+                print(f"   你輸入的: {repr(server_cmd)}")
+                print("   正確範例: python3 server_game.py {port}")
+                print("   提示: 請使用半形括號 {} 而非全形括號 ｛｝")
                 continue
             
             break
@@ -425,12 +442,76 @@ class DeveloperClient:
         """更新遊戲"""
         print("\n🔄 更新遊戲")
         
-        game_name = self.get_input("要更新的遊戲名稱")
+        # 1. 先取得遊戲列表
+        response = self.send_request("list_my_games", {})
+        
+        if response["status"] != "success":
+            print(f"❌ 無法取得遊戲列表: {response.get('message', '')}")
+            input("\n按 Enter 繼續...")
+            return
+        
+        games = response["data"]["games"]
+        
+        if not games:
+            print("  你還沒有上架任何遊戲")
+            input("\n按 Enter 繼續...")
+            return
+        
+        # 2. 顯示可更新的遊戲列表（只顯示 active 的）
+        active_games = [g for g in games if g["status"] == "active"]
+        
+        if not active_games:
+            print("  沒有可更新的遊戲（所有遊戲都已下架）")
+            input("\n按 Enter 繼續...")
+            return
+        
+        print(f"\n可更新的遊戲 (共 {len(active_games)} 款):\n")
+        for i, game in enumerate(active_games, 1):
+            print(f"  {i}. {game['game_name']} (v{game['version']})")
+            
+            game_type = game.get('game_type', 'Unknown')
+            download_count = game.get('download_count', 0)
+            average_rating = game.get('average_rating', 0.0)
+            
+            print(f"     {game_type} | 下載: {download_count} 次 | 評分: {average_rating:.1f}/5.0")
+            print()
+        
+        print("  0. 取消")
+        
+        # 3. 選擇遊戲
+        while True:
+            choice = self.get_input(f"請選擇要更新的遊戲 (0-{len(active_games)})", required=False)
+            if not choice:
+                continue
+            
+            try:
+                idx = int(choice)
+                if idx == 0:
+                    return
+                if 1 <= idx <= len(active_games):
+                    game_name = active_games[idx - 1]["game_name"]
+                    current_version = active_games[idx - 1]["version"]
+                    break
+                else:
+                    print(f"❌ 請輸入 0-{len(active_games)}")
+            except ValueError:
+                print("❌ 請輸入數字")
+        
+        print(f"\n選擇的遊戲: {game_name} (當前版本: {current_version})")
+        
+        # 4. 輸入新版本號
         new_version = self.get_input("新版本號")
+        
+        # 5. 驗證版本號格式（可選）
+        # 可以加入版本號比較，確保新版本 > 當前版本
+        
+        # 6. 輸入更新說明
         update_notes = self.get_input("更新說明", required=False)
         
+        # 7. 輸入遊戲目錄
         game_dir = self.get_input("新版本遊戲檔案目錄")
         
+        # 8. 打包遊戲檔案
         print("\n📦 正在打包遊戲檔案...")
         game_files = self.pack_game_directory(game_dir)
         
@@ -440,6 +521,21 @@ class DeveloperClient:
             return
         
         print(f"✅ 打包完成")
+        
+        # 9. 確認更新
+        print(f"\n確認更新資訊:")
+        print(f"  遊戲名稱: {game_name}")
+        print(f"  當前版本: {current_version}")
+        print(f"  新版本: {new_version}")
+        print(f"  更新說明: {update_notes or '無'}")
+        
+        confirm = self.get_input("\n確定要更新嗎？ (yes/no)", required=False)
+        if confirm.lower() != "yes":
+            print("❌ 已取消更新")
+            input("按 Enter 繼續...")
+            return
+        
+        # 10. 上傳更新
         print("\n⏳ 上傳中...")
         
         response = self.send_request("update_game", {

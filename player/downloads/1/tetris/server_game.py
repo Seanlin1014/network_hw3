@@ -193,116 +193,7 @@ class TetrisGameServer:
         self.connections = {}  # {player_name: socket}
         self.game_seed = int(time.time())
         self.running = True
-        self.broadcast_interval = 0.1  # 每0.1秒廣播一次狀態
-        self.player_counter = 0  # 玩家計數器，用於生成唯一ID
-        self.game_start_time = None  # 遊戲開始時間
         
-    
-    def broadcast_game_state(self):
-        """定期廣播遊戲狀態給所有玩家"""
-        while self.running:
-            try:
-                time.sleep(self.broadcast_interval)
-                
-                if len(self.games) < 2:
-                    # 等待兩個玩家都加入
-                    continue
-                
-                # 記錄遊戲開始時間
-                if self.game_start_time is None:
-                    self.game_start_time = time.time()
-                    print(f"[Server] Game started with {len(self.games)} players!")
-                
-                # 收集所有玩家的狀態
-                states = {}
-                for player_name, game in self.games.items():
-                    game.auto_drop()  # 自動下落
-                    states[player_name] = game.get_state()
-                
-                print(f"[Broadcast] Sending game state to {len(self.connections)} players")
-                
-                # 廣播給所有連接的玩家
-                message = {
-                    "type": "GAME_STATE",
-                    "states": states
-                }
-                message_bytes = json.dumps(message).encode("utf-8")
-                
-                # 發送給所有玩家
-                dead_connections = []
-                for player_name, conn in list(self.connections.items()):
-                    try:
-                        send_frame(conn, message_bytes)
-                    except:
-                        dead_connections.append(player_name)
-                
-                # 清理斷線的玩家
-                for player_name in dead_connections:
-                    if player_name in self.connections:
-                        del self.connections[player_name]
-                    if player_name in self.games:
-                        del self.games[player_name]
-                
-                # 檢查遊戲結束條件（遊戲開始3秒後才檢查）
-                if len(self.games) >= 2 and self.game_start_time:
-                    elapsed = time.time() - self.game_start_time
-                    if elapsed >= 3.0:  # 給玩家3秒反應時間
-                        for player_name, game in self.games.items():
-                            # 檢查是否有玩家完成遊戲（清除1行）或遊戲結束
-                            if game.lines_cleared >= 1 or game.game_over:
-                                print(f"[Server] Game ending: {player_name} - lines={game.lines_cleared}, game_over={game.game_over}")
-                                self.end_game()
-                                return
-                            
-            except Exception as e:
-                import traceback
-                print(f"[Broadcast] Error: {e}")
-                traceback.print_exc()
-    
-    def end_game(self):
-        """結束遊戲並發送結果"""
-        if len(self.games) < 2:
-            return
-        
-        # 找出勝者
-        players = list(self.games.keys())
-        game1 = self.games[players[0]]
-        game2 = self.games[players[1]]
-        
-        if game1.lines_cleared >= 1 and game2.lines_cleared < 1:
-            winner = players[0]
-        elif game2.lines_cleared >= 1 and game1.lines_cleared < 1:
-            winner = players[1]
-        elif game1.game_over and not game2.game_over:
-            winner = players[1]
-        elif game2.game_over and not game1.game_over:
-            winner = players[0]
-        else:
-            # 平手或同時完成，比較分數
-            winner = players[0] if game1.score >= game2.score else players[1]
-        
-        # 發送遊戲結束訊息
-        results = [
-            {"player": players[0], "score": game1.score, "lines": game1.lines_cleared},
-            {"player": players[1], "score": game2.score, "lines": game2.lines_cleared}
-        ]
-        
-        end_message = {
-            "type": "GAME_END",
-            "winner": winner,
-            "results": results
-        }
-        end_message_bytes = json.dumps(end_message).encode("utf-8")
-        
-        for conn in self.connections.values():
-            try:
-                send_frame(conn, end_message_bytes)
-            except:
-                pass
-        
-        self.running = False
-        print(f"[Server] Game ended. Winner: {winner}")
-
     def handle_client(self, conn, addr):
         """處理客戶端連線"""
         player_name = None
@@ -319,10 +210,7 @@ class TetrisGameServer:
                     action = request.get("action")
                     
                     if action == "join":
-                        # 生成唯一的玩家名稱
-                        self.player_counter += 1
-                        player_name = f"Player{self.player_counter}"
-                        print(f"[Server] Player joined as: {player_name}")
+                        player_name = request.get("player_name")
                         self.games[player_name] = ServerTetrisGame(player_name, self.game_seed)
                         self.connections[player_name] = conn
                         response = {
@@ -331,7 +219,7 @@ class TetrisGameServer:
                             "seed": self.game_seed,
                             "state": self.games[player_name].get_state()
                         }
-                        send_frame(conn, json.dumps(response).encode("utf-8"))
+                        send_frame(conn, response)
                         
                     elif action == "input":
                         key = request.get("key")
@@ -342,7 +230,7 @@ class TetrisGameServer:
                                 "status": "success",
                                 "state": game.get_state()
                             }
-                            send_frame(conn, json.dumps(response).encode("utf-8"))
+                            send_frame(conn, response)
                     
                     elif action == "get_state":
                         if player_name and player_name in self.games:
@@ -352,19 +240,19 @@ class TetrisGameServer:
                                 "status": "success",
                                 "state": game.get_state()
                             }
-                            send_frame(conn, json.dumps(response).encode("utf-8"))
+                            send_frame(conn, response)
                     
                     elif action == "quit":
                         break
                     
                     else:
-                        send_frame(conn, json.dumps({"status": "error", "message": "Unknown action"}).encode("utf-8"))
+                        send_frame(conn, {"status": "error", "message": "Unknown action"})
                 
                 except json.JSONDecodeError:
-                    send_frame(conn, json.dumps({"status": "error", "message": "Invalid JSON"}).encode("utf-8"))
+                    send_frame(conn, {"status": "error", "message": "Invalid JSON"})
                 except Exception as e:
                     print(f"Error handling request: {e}")
-                    send_frame(conn, json.dumps({"status": "error", "message": str(e)}).encode("utf-8"))
+                    send_frame(conn, {"status": "error", "message": str(e)})
         
         except Exception as e:
             print(f"Connection error: {e}")
@@ -380,11 +268,6 @@ class TetrisGameServer:
         """啟動伺服器"""
         server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        
-        # 啟動廣播線程
-        broadcast_thread = threading.Thread(target=self.broadcast_game_state, daemon=True)
-        broadcast_thread.start()
-        print("[Tetris Server] Game state broadcast started")
         
         try:
             server_socket.bind(('0.0.0.0', self.port))
