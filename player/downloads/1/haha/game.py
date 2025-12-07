@@ -322,8 +322,12 @@ class TetrisGame:
         if not self.conn:
             return
         try:
-            msg = encode_message("INPUT", key=key)
-            send_frame(self.conn, msg)
+            # 使用 Server 期望的格式
+            request = {
+                "action": "input",
+                "key": key
+            }
+            send_frame(self.conn, json.dumps(request).encode('utf-8'))
         except Exception:
             pass
     
@@ -768,10 +772,12 @@ def main():
             print(f"[Client] Failed to join: {response.get('message')}")
             sys.exit(1)
         
-        print(f"[Client] Successfully joined game!")
+        # 使用 Server 分配的玩家名稱
+        assigned_name = response.get("player_name", username)
+        print(f"[Client] Successfully joined game as: {assigned_name}")
         
         # 啟動遊戲
-        game = TetrisGame(conn=sock, username=username)
+        game = TetrisGame(conn=sock, username=assigned_name)
         game.run()
         
         # 關閉連線

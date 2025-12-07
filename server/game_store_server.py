@@ -1,1266 +1,669 @@
 #!/usr/bin/env python3
-# game_store_server.py - 遊戲商店伺服器（整合 Developer 和 Lobby 功能）
-
-"""
-Game Store Server - 統一的遊戲商店伺服器
-支援：
-1. Developer 功能：遊戲上架、更新、下架
-2. Lobby 功能：玩家瀏覽、下載、房間管理
-3. 遊戲評分與留言
-"""
+# developer_client.py - 開發者客戶端（選單式介面）
 
 import socket
-import threading
 import json
-import time
 import os
 import sys
-import shutil
+import zipfile
+import io
 import base64
 from lpfp import send_frame, recv_frame
 
-# ==================== 設定 ====================
-
-HOST = "0.0.0.0"
-DEVELOPER_PORT = 0  # Developer Server Port
-LOBBY_PORT = 0      # Lobby Server Port
-
-# 資料目錄
-GAMES_DIR = "uploaded_games"  # 上架遊戲儲存目錄
-GAME_METADATA_FILE = "game_store_data/games_metadata.json"
-REVIEWS_FILE = "game_store_data/reviews.json"
-
-os.makedirs(GAMES_DIR, exist_ok=True)
-os.makedirs("game_store_data", exist_ok=True)
-
-# 全局鎖
-games_lock = threading.Lock()
-reviews_lock = threading.Lock()
-
-# 線上玩家追蹤（防止重複登入）
-online_players = {}  # {username: (conn, addr)}
-online_players_lock = threading.Lock()
-
-# 資料庫連線資訊
-DB_HOST = "localhost"
-DB_PORT = None  # 從命令列參數設定
-
-
-# ==================== 資料載入與保存 ====================
-
-def load_json_file(filepath, default=None):
-    """安全載入 JSON 檔案"""
-    if default is None:
-        default = {}
+class DeveloperClient:
+    def __init__(self, host, port):
+        self.host = host
+        self.port = port
+        self.username = None
+        self.running = True
     
-    if not os.path.exists(filepath):
-        return default
-    
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"[Store] Error loading {filepath}: {e}")
-        return default
-
-
-def save_json_file(filepath, data):
-    """原子性保存 JSON 檔案"""
-    try:
-        temp_file = filepath + ".tmp"
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(temp_file, filepath)
-        return True
-    except Exception as e:
-        print(f"[Store] Error saving {filepath}: {e}")
-        return False
-
-
-# ==================== Developer 相關功能 ====================
-
-def handle_developer_login(data):
-    """處理開發者登入（驗證 developer 帳號）"""
-    username = data.get("username")
-    password = data.get("password")
-    
-    if not username or not password:
-        return {"status": "error", "message": "Missing credentials"}
-    
-    # 向 DB Server 驗證（需要檢查是否為 developer 帳號）
-    try:
-        db_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        db_sock.connect((DB_HOST, DB_PORT))
-        
-        request = {
-            "collection": "Developer",
-            "action": "query",
-            "data": {"type": "login", "name": username, "password": password}
-        }
-        
-        send_frame(db_sock, json.dumps(request).encode('utf-8'))
-        response_raw = recv_frame(db_sock)
-        db_sock.close()
-        
-        if response_raw:
-            response = json.loads(response_raw.decode('utf-8'))
-            return response
-        else:
-            return {"status": "error", "message": "DB connection failed"}
-    
-    except Exception as e:
-        print(f"[Developer] Login error: {e}")
-        return {"status": "error", "message": str(e)}
-
-
-def handle_upload_game(data, developer_name):
-    """處理遊戲上架"""
-    game_name = data.get("game_name")
-    game_type = data.get("game_type")  # CLI / GUI / Multiplayer
-    description = data.get("description", "")
-    max_players = data.get("max_players", 2)
-    version = data.get("version", "1.0.0")
-    game_files_b64 = data.get("game_files")  # Base64 encoded zip file
-    config = data.get("config", {})  # 遊戲設定（啟動命令等）
-    
-    if not all([game_name, game_type, game_files_b64]):
-        return {"status": "error", "message": "Missing required fields"}
-    
-    with games_lock:
-        # 載入遊戲 metadata
-        games_metadata = load_json_file(GAME_METADATA_FILE, {})
-        
-        # 檢查遊戲是否已存在
-        if game_name in games_metadata:
-            return {"status": "error", "message": "Game already exists. Use update instead."}
-        
-        # 建立遊戲目錄
-        game_dir = os.path.join(GAMES_DIR, game_name, version)
-        os.makedirs(game_dir, exist_ok=True)
-        
-        # 儲存遊戲檔案
+    def connect(self):
+        """連線到 Developer Server"""
         try:
-            game_files = base64.b64decode(game_files_b64)
-            zip_path = os.path.join(game_dir, "game.zip")
-            with open(zip_path, 'wb') as f:
-                f.write(game_files)
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.connect((self.host, self.port))
             
-            # 解壓縮
-            import zipfile
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(game_dir)
+            # === 發送握手 ===
+            handshake = {"client_type": "developer"}
+            send_frame(self.sock, json.dumps(handshake).encode('utf-8'))
             
-            # 刪除 zip 檔
-            os.remove(zip_path)
+            # 等待握手回應
+            response_raw = recv_frame(self.sock)
+            if not response_raw:
+                print("❌ 連線失敗: Server 無回應")
+                self.sock.close()
+                return False
             
+            response = json.loads(response_raw.decode('utf-8'))
+            
+            if response["status"] != "success":
+                print(f"\n❌ 連線錯誤!\n")
+                print(response.get("message", "Unknown error"))
+                print("\n💡 提示: 請確認你使用的是 Developer Port，不是 Lobby Port")
+                self.sock.close()
+                return False
+            
+            print(f"✅ 已連線到 {response.get('server_type', 'Unknown')} Server")
+            # === 握手完成 ===
+            
+            return True
         except Exception as e:
-            return {"status": "error", "message": f"Failed to save game files: {str(e)}"}
+            print(f"❌ 連線失敗: {e}")
+            return False
+    
+    def send_request(self, action, data):
+        """發送請求"""
+        try:
+            request = {"action": action, "data": data}
+            send_frame(self.sock, json.dumps(request).encode('utf-8'))
+            
+            response_raw = recv_frame(self.sock)
+            if response_raw:
+                return json.loads(response_raw.decode('utf-8'))
+            else:
+                return {"status": "error", "message": "No response from server"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    def clear_screen(self):
+        """清除螢幕"""
+        os.system('clear' if os.name != 'nt' else 'cls')
+    
+    def show_menu(self, title, options):
+        """顯示選單"""
+        print("\n" + "="*60)
+        print(f"  {title}")
+        print("="*60)
+        for i, option in enumerate(options, 1):
+            print(f"  {i}. {option}")
+        print("="*60)
+    
+    def get_input(self, prompt, required=True):
+        """取得使用者輸入，自動轉換全形括號為半形"""
+        while True:
+            value = input(f"{prompt}: ").strip()
+            
+            # 自動轉換全形括號為半形
+            if value:
+                value = value.replace('｛', '{').replace('｝', '}')
+                value = value.replace('（', '(').replace('）', ')')
+            
+            if value or not required:
+                return value
+            print("❌ 此欄位必填，請重新輸入")
+    
+    def login_menu(self):
+        """登入/註冊選單"""
+        while True:
+            self.clear_screen()
+            self.show_menu("Developer Portal - 開發者入口", [
+                "登入 (Login)",
+                "註冊 (Register)",
+                "離開 (Exit)"
+            ])
+            
+            choice = self.get_input("請選擇")
+            
+            if choice == "1":
+                if self.login():
+                    return True
+            elif choice == "2":
+                if self.register():
+                    return True
+            elif choice == "3":
+                return False
+            else:
+                print("❌ 無效的選項")
+                input("按 Enter 繼續...")
+    
+    def register(self):
+        """註冊開發者帳號"""
+        print("\n📝 註冊開發者帳號")
+        username = self.get_input("帳號名稱")
+        password = self.get_input("密碼")
         
-        # 儲存 metadata
-        game_id = f"{game_name}_{int(time.time())}"
-        games_metadata[game_name] = {
-            "game_id": game_id,
+        # 向 DB Server 註冊
+        try:
+            db_host = self.host
+            db_port = int(input("DB Server Port: ").strip())
+            
+            db_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            db_sock.connect((db_host, db_port))
+            
+            request = {
+                "collection": "Developer",
+                "action": "create",
+                "data": {"name": username, "password": password}
+            }
+            
+            send_frame(db_sock, json.dumps(request).encode('utf-8'))
+            response = json.loads(recv_frame(db_sock).decode('utf-8'))
+            db_sock.close()
+            
+            if response["status"] == "success":
+                print(f"✅ 註冊成功！")
+                input("按 Enter 繼續...")
+                return False
+            else:
+                print(f"❌ 註冊失敗: {response.get('message', 'Unknown error')}")
+                input("按 Enter 繼續...")
+                return False
+        
+        except Exception as e:
+            print(f"❌ 註冊失敗: {e}")
+            input("按 Enter 繼續...")
+            return False
+    
+    def login(self):
+        """登入"""
+        print("\n🔐 開發者登入")
+        username = self.get_input("帳號")
+        password = self.get_input("密碼")
+        
+        response = self.send_request("login", {
+            "username": username,
+            "password": password
+        })
+        
+        if response["status"] == "success":
+            self.username = username
+            print(f"✅ 登入成功！歡迎, {username}")
+            input("按 Enter 繼續...")
+            return True
+        else:
+            print(f"❌ 登入失敗: {response.get('message', 'Unknown error')}")
+            input("按 Enter 繼續...")
+            return False
+    
+    def main_menu(self):
+        """主選單"""
+        while self.running:
+            self.clear_screen()
+            self.show_menu(f"開發者主選單 - {self.username}", [
+                "查看我的遊戲",
+                "上架新遊戲",
+                "更新遊戲",
+                "下架遊戲",
+                "登出"
+            ])
+            
+            choice = self.get_input("請選擇")
+            
+            if choice == "1":
+                self.list_my_games()
+            elif choice == "2":
+                self.upload_game()
+            elif choice == "3":
+                self.update_game()
+            elif choice == "4":
+                self.remove_game()
+            elif choice == "5":
+                self.running = False
+                print("👋 登出成功")
+                break
+            else:
+                print("❌ 無效的選項")
+                input("按 Enter 繼續...")
+    
+    def list_my_games(self):
+        """列出我的遊戲"""
+        print("\n📋 我的遊戲列表")
+        
+        response = self.send_request("list_my_games", {})
+        
+        if response["status"] == "success":
+            games = response["data"]["games"]
+            
+            if not games:
+                print("  目前沒有任何遊戲")
+            else:
+                print(f"\n  共 {len(games)} 款遊戲:\n")
+                for i, game in enumerate(games, 1):
+                    status_icon = "✅" if game["status"] == "active" else "❌"
+                    print(f"  {i}. {status_icon} {game['game_name']}")
+                    print(f"     類型: {game.get('game_type', 'Unknown')}")
+                    print(f"     版本: {game['version']}")
+                    print(f"     狀態: {game['status']}")
+                    print(f"     下載次數: {game['download_count']}")
+                    print(f"     評分: {game['average_rating']:.1f}/5.0")
+                    print()
+        else:
+            print(f"❌ 取得遊戲列表失敗: {response.get('message', '')}")
+        
+        input("\n按 Enter 返回...")
+    
+    def pack_game_directory(self, game_dir):
+        """打包遊戲目錄成 ZIP"""
+        if not os.path.exists(game_dir):
+            return None
+        
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for root, dirs, files in os.walk(game_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, game_dir)
+                    zip_file.write(file_path, arcname)
+        
+        zip_buffer.seek(0)
+        return base64.b64encode(zip_buffer.read()).decode('utf-8')
+    
+    def upload_game(self):
+        """上架新遊戲"""
+        print("\n📤 上架新遊戲")
+        
+        # 遊戲名稱驗證
+        while True:
+            game_name = self.get_input("遊戲名稱")
+            if len(game_name) < 2:
+                print("❌ 遊戲名稱至少需要 2 個字元")
+                continue
+            if len(game_name) > 50:
+                print("❌ 遊戲名稱不能超過 50 個字元")
+                continue
+            # 檢查是否只包含空白
+            if game_name.strip() == "":
+                print("❌ 遊戲名稱不能只包含空白")
+                continue
+            break
+        
+        print("\n遊戲類型:")
+        print("  1. CLI (命令列介面)")
+        print("  2. GUI (圖形介面)")
+        print("  3. Multiplayer (多人遊戲)")
+        
+        # 遊戲類型驗證
+        while True:
+            game_type_choice = self.get_input("選擇類型 (1-3)")
+            if game_type_choice in ["1", "2", "3"]:
+                game_type_map = {"1": "CLI", "2": "GUI", "3": "Multiplayer"}
+                game_type = game_type_map[game_type_choice]
+                break
+            else:
+                print("❌ 請輸入 1, 2 或 3")
+        
+        # 遊戲簡介驗證
+        while True:
+            description = self.get_input("遊戲簡介")
+            if len(description) < 5:
+                print("❌ 遊戲簡介至少需要 5 個字元")
+                continue
+            if description.strip() == "":
+                print("❌ 遊戲簡介不能只包含空白")
+                continue
+            break
+        
+        # 最大玩家數驗證
+        while True:
+            max_players_input = self.get_input("最大玩家數", required=False) or "2"
+            try:
+                max_players = int(max_players_input)
+                if 1 <= max_players <= 100:
+                    break
+                print("❌ 玩家數必須在 1-100 之間")
+            except ValueError:
+                print("❌ 請輸入有效的數字")
+        
+        # 版本號驗證
+        while True:
+            version = self.get_input("版本號 (預設 1.0.0)", required=False) or "1.0.0"
+            parts = version.split('.')
+            if len(parts) == 3 and all(p.isdigit() for p in parts):
+                break
+            print("❌ 版本號格式錯誤，應為 x.x.x（例如 1.0.0）")
+        
+        # 遊戲檔案路徑驗證
+        while True:
+            game_dir = self.get_input("遊戲檔案目錄路徑")
+            
+            # 展開 ~ 為完整路徑
+            game_dir = os.path.expanduser(game_dir)
+            
+            # 驗證目錄
+            if not os.path.exists(game_dir):
+                print(f"❌ 目錄不存在: {game_dir}")
+                continue
+            
+            if not os.path.isdir(game_dir):
+                print(f"❌ 這不是一個目錄: {game_dir}")
+                continue
+            
+            if not os.listdir(game_dir):
+                print(f"❌ 目錄是空的: {game_dir}")
+                continue
+            
+            break
+        
+        print("\n📦 正在打包遊戲檔案...")
+        game_files = self.pack_game_directory(game_dir)
+        
+        if not game_files:
+            print(f"❌ 無法讀取遊戲目錄: {game_dir}")
+            input("按 Enter 繼續...")
+            return
+        
+        print(f"✅ 打包完成，大小: {len(game_files)} bytes (base64)")
+        
+        # 設定檔 - 啟動命令
+        print("\n⚙️  遊戲配置")
+        print("提示: 啟動命令範例")
+        print("  Python: python3 game.py {host} {port}")
+        print("  C++: ./playerA {host} {port}")
+        
+        while True:
+            start_cmd = self.get_input("啟動命令 (Client)", required=False)
+            if not start_cmd:
+                print("⚠️  沒有啟動命令，玩家需要手動啟動")
+                break
+            
+            # 檢查是否包含 python3 或可執行檔
+            if not (start_cmd.startswith("python3 ") or start_cmd.startswith("./") or start_cmd.startswith("java ")):
+                print("❌ 啟動命令應該以 'python3 ', './' 或 'java ' 開頭")
+                print("   例如: python3 game.py {host} {port}")
+                continue
+            
+            # 檢查是否包含 {host} 和 {port}
+            has_host = "{host}" in start_cmd
+            has_port = "{port}" in start_cmd
+            
+            if not has_host or not has_port:
+                print("❌ 啟動命令必須包含 {host} 和 {port} 占位符")
+                print(f"   偵測到: {{host}}={has_host}, {{port}}={has_port}")
+                print(f"   你輸入的: {repr(start_cmd)}")
+                print("   正確範例: python3 game.py {host} {port}")
+                print("   提示: 請使用半形括號 {} 而非全形括號 ｛｝")
+                continue
+            
+            break
+        
+        # Server 命令
+        print("\n提示: Server 命令範例")
+        print("  Python: python3 server_game.py {port}")
+        print("  C++: ./lobby_server {port}")
+        
+        while True:
+            server_cmd = self.get_input("伺服器命令 (如果沒有 Server 可留空)", required=False)
+            if not server_cmd:
+                print("⚠️  此遊戲沒有 Server（純 Client 遊戲）")
+                break
+            
+            # 檢查是否包含 python3 或可執行檔
+            if not (server_cmd.startswith("python3 ") or server_cmd.startswith("./") or server_cmd.startswith("java ")):
+                print("❌ Server 命令應該以 'python3 ', './' 或 'java ' 開頭")
+                print("   例如: python3 server_game.py {port}")
+                continue
+            
+            # 檢查是否包含 {port}
+            has_port = "{port}" in server_cmd
+            
+            if not has_port:
+                print("❌ Server 命令必須包含 {port} 占位符")
+                print(f"   偵測到: {{port}}={has_port}")
+                print(f"   你輸入的: {repr(server_cmd)}")
+                print("   正確範例: python3 server_game.py {port}")
+                print("   提示: 請使用半形括號 {} 而非全形括號 ｛｝")
+                continue
+            
+            break
+        
+        # 編譯命令（C++ 遊戲）
+        compile_cmd = self.get_input("編譯命令 (C++ 遊戲才需要，例如: make)", required=False)
+        
+        config = {}
+        if start_cmd:
+            config["start_command"] = start_cmd
+        if server_cmd:
+            config["server_command"] = server_cmd
+        if compile_cmd:
+            config["compile"] = compile_cmd
+        
+        print("\n⏳ 上傳中...")
+        
+        response = self.send_request("upload_game", {
             "game_name": game_name,
-            "developer": developer_name,
             "game_type": game_type,
             "description": description,
             "max_players": max_players,
             "version": version,
-            "created_at": time.time(),
-            "updated_at": time.time(),
-            "status": "active",  # active / inactive
-            "config": config,
-            "download_count": 0,
-            "average_rating": 0.0,
-            "review_count": 0
-        }
-        
-        if save_json_file(GAME_METADATA_FILE, games_metadata):
-            return {
-                "status": "success",
-                "message": "Game uploaded successfully",
-                "data": {"game_id": game_id, "game_name": game_name, "version": version}
-            }
-        else:
-            return {"status": "error", "message": "Failed to save metadata"}
-
-
-def handle_update_game(data, developer_name):
-    """處理遊戲更新"""
-    game_name = data.get("game_name")
-    new_version = data.get("version")
-    game_files_b64 = data.get("game_files")
-    update_notes = data.get("update_notes", "")
-    
-    if not all([game_name, new_version, game_files_b64]):
-        return {"status": "error", "message": "Missing required fields"}
-    
-    with games_lock:
-        games_metadata = load_json_file(GAME_METADATA_FILE, {})
-        
-        # 檢查遊戲是否存在
-        if game_name not in games_metadata:
-            return {"status": "error", "message": "Game not found"}
-        
-        # 檢查遊戲狀態
-        if games_metadata[game_name]["status"] != "active":
-            return {"status": "error", "message": "Cannot update inactive game. Please re-upload the game instead."}
-        
-        # 檢查權限
-        if games_metadata[game_name]["developer"] != developer_name:
-            return {"status": "error", "message": "Permission denied"}
-        
-        # 建立新版本目錄
-        game_dir = os.path.join(GAMES_DIR, game_name, new_version)
-        os.makedirs(game_dir, exist_ok=True)
-        
-        # 儲存新版本檔案
-        try:
-            game_files = base64.b64decode(game_files_b64)
-            zip_path = os.path.join(game_dir, "game.zip")
-            with open(zip_path, 'wb') as f:
-                f.write(game_files)
-            
-            import zipfile
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(game_dir)
-            
-            os.remove(zip_path)
-            
-        except Exception as e:
-            return {"status": "error", "message": f"Failed to save game files: {str(e)}"}
-        
-        # 更新 metadata
-        games_metadata[game_name]["version"] = new_version
-        games_metadata[game_name]["updated_at"] = time.time()
-        games_metadata[game_name]["update_notes"] = update_notes
-        
-        if save_json_file(GAME_METADATA_FILE, games_metadata):
-            return {
-                "status": "success",
-                "message": "Game updated successfully",
-                "data": {"game_name": game_name, "new_version": new_version}
-            }
-        else:
-            return {"status": "error", "message": "Failed to update metadata"}
-
-
-def handle_remove_game(data, developer_name):
-    """處理遊戲下架（完全刪除）"""
-    game_name = data.get("game_name")
-    
-    if not game_name:
-        return {"status": "error", "message": "Missing game_name"}
-    
-    with games_lock:
-        games_metadata = load_json_file(GAME_METADATA_FILE, {})
-        
-        if game_name not in games_metadata:
-            return {"status": "error", "message": "Game not found"}
-        
-        # 檢查權限
-        if games_metadata[game_name]["developer"] != developer_name:
-            return {"status": "error", "message": "Permission denied"}
-        
-        # 完全刪除遊戲（從 metadata 移除）
-        del games_metadata[game_name]
-        
-        # 刪除遊戲檔案
-        game_dir = os.path.join(GAMES_DIR, game_name)
-        try:
-            if os.path.exists(game_dir):
-                import shutil
-                shutil.rmtree(game_dir)
-        except Exception as e:
-            print(f"[Warning] Failed to delete game files: {e}")
-            # 繼續執行，即使檔案刪除失敗
-        
-        if save_json_file(GAME_METADATA_FILE, games_metadata):
-            return {
-                "status": "success",
-                "message": "Game completely removed",
-                "data": {"game_name": game_name}
-            }
-        else:
-            return {"status": "error", "message": "Failed to remove game"}
-
-
-def handle_list_my_games(developer_name):
-    """列出開發者的所有遊戲（只顯示 active）"""
-    with games_lock:
-        games_metadata = load_json_file(GAME_METADATA_FILE, {})
-        
-        my_games = []
-        for game_name, info in games_metadata.items():
-            # 只列出屬於該開發者且狀態為 active 的遊戲
-            if info["developer"] == developer_name and info["status"] == "active":
-                my_games.append({
-                    "game_name": game_name,
-                    "version": info["version"],
-                    "game_type": info.get("game_type", "Unknown"),
-                    "status": info["status"],
-                    "download_count": info["download_count"],
-                    "average_rating": info["average_rating"],
-                    "created_at": info["created_at"],
-                    "updated_at": info["updated_at"]
-                })
-        
-        return {
-            "status": "success",
-            "data": {"games": my_games}
-        }
-
-
-# ==================== 房間管理 ====================
-
-# 全局房間資料
-rooms = {}  # {room_id: {room_info}}
-room_id_counter = 1
-rooms_lock = threading.Lock()
-
-# 遊戲 Server 進程管理
-game_servers = {}  # {room_id: process}
-game_servers_lock = threading.Lock()
-
-
-def generate_room_id():
-    """產生唯一的房間 ID"""
-    global room_id_counter
-    room_id = f"ROOM_{room_id_counter:04d}"
-    room_id_counter += 1
-    return room_id
-
-
-def handle_create_room(data, player_name):
-    """建立遊戲房間"""
-    game_name = data.get("game_name")
-    
-    if not game_name:
-        return {"status": "error", "message": "Missing game_name"}
-    
-    with games_lock:
-        games_metadata = load_json_file(GAME_METADATA_FILE, {})
-        
-        if game_name not in games_metadata:
-            return {"status": "error", "message": "Game not found"}
-        
-        game_info = games_metadata[game_name]
-        
-        if game_info["status"] != "active":
-            return {"status": "error", "message": "Game is not available"}
-    
-    with rooms_lock:
-        room_id = generate_room_id()
-        
-        rooms[room_id] = {
-            "room_id": room_id,
-            "game_name": game_name,
-            "version": game_info.get("version", "1.0.0"),  # 加入 version
-            "host": player_name,
-            "players": [player_name],
-            "max_players": game_info["max_players"],
-            "status": "waiting",  # waiting / playing / finished
-            "created_at": time.time(),
-            "game_server_port": None
-        }
-        
-        return {
-            "status": "success",
-            "message": "Room created",
-            "data": {
-                "room_id": room_id,
-                "game_name": game_name,
-                "max_players": game_info["max_players"]
-            }
-        }
-
-
-def handle_list_rooms():
-    """列出所有房間"""
-    with rooms_lock:
-        room_list = []
-        for room_id, room in rooms.items():
-            if room["status"] != "finished":
-                room_list.append({
-                    "room_id": room_id,
-                    "game_name": room["game_name"],
-                    "host": room["host"],
-                    "players": room["players"],
-                    "current_players": len(room["players"]),
-                    "max_players": room["max_players"],
-                    "status": room["status"]
-                })
-        
-        return {
-            "status": "success",
-            "data": {"rooms": room_list}
-        }
-
-
-def handle_get_room_status(data, player_name):
-    """查詢房間狀態（即時更新）"""
-    room_id = data.get("room_id")
-    
-    if not room_id:
-        return {"status": "error", "message": "Missing room_id"}
-    
-    with rooms_lock:
-        if room_id not in rooms:
-            return {"status": "error", "message": "Room not found or has been closed"}
-        
-        room = rooms[room_id]
-        
-        # 檢查玩家是否在房間內
-        if player_name not in room["players"]:
-            return {"status": "error", "message": "You are not in this room"}
-        
-        return {
-            "status": "success",
-            "data": {
-                "room_id": room_id,
-                "game_name": room.get("game_name", "Unknown"),
-                "version": room.get("version", "1.0.0"),
-                "host": room.get("host", ""),
-                "players": room.get("players", []),
-                "current_players": len(room.get("players", [])),
-                "max_players": room.get("max_players", 2),
-                "status": room.get("status", "unknown"),
-                "is_host": (player_name == room.get("host"))
-            }
-        }
-
-
-def handle_join_room(data, player_name):
-    """加入房間"""
-    room_id = data.get("room_id")
-    
-    if not room_id:
-        return {"status": "error", "message": "Missing room_id"}
-    
-    with rooms_lock:
-        if room_id not in rooms:
-            return {"status": "error", "message": "Room not found"}
-        
-        room = rooms[room_id]
-        
-        if room["status"] != "waiting":
-            return {"status": "error", "message": "Room is not accepting players"}
-        
-        if player_name in room["players"]:
-            return {"status": "error", "message": "Already in room"}
-        
-        if len(room["players"]) >= room["max_players"]:
-            return {"status": "error", "message": "Room is full"}
-        
-        room["players"].append(player_name)
-        
-        return {
-            "status": "success",
-            "message": "Joined room",
-            "data": {
-                "room_id": room_id,
-                "game_name": room["game_name"],
-                "players": room["players"]
-            }
-        }
-
-
-def handle_leave_room(data, player_name):
-    """離開房間"""
-    room_id = data.get("room_id")
-    
-    if not room_id:
-        return {"status": "error", "message": "Missing room_id"}
-    
-    with rooms_lock:
-        if room_id not in rooms:
-            return {"status": "error", "message": "Room not found"}
-        
-        room = rooms[room_id]
-        
-        if player_name not in room["players"]:
-            return {"status": "error", "message": "Not in room"}
-        
-        is_host = (player_name == room["host"])
-        
-        # 移除玩家
-        room["players"].remove(player_name)
-        
-        # 如果房主離開，解散房間
-        if is_host:
-            # 記錄剩餘玩家
-            remaining_players = room["players"].copy()
-            
-            # 停止 Game Server（如果有）
-            if "game_server_pid" in room:
-                try:
-                    import signal
-                    os.killpg(os.getpgid(room["game_server_pid"]), signal.SIGTERM)
-                    print(f"🛑 Game Server stopped (PID: {room['game_server_pid']})")
-                except Exception as e:
-                    print(f"⚠️ Failed to stop game server: {e}")
-            
-            # 刪除房間
-            del rooms[room_id]
-            
-            print(f"[Lobby] 🏠 Room {room_id} disbanded (host {player_name} left)")
-            if remaining_players:
-                print(f"[Lobby] ⚠️  {len(remaining_players)} player(s) were in room: {', '.join(remaining_players)}")
-            
-            return {
-                "status": "success",
-                "message": "Room disbanded (host left)",
-                "data": {
-                    "room_id": room_id,
-                    "disbanded": True,
-                    "remaining_players": remaining_players
-                }
-            }
-        
-        # 如果房間空了，也刪除房間
-        if not room["players"]:
-            del rooms[room_id]
-            print(f"[Lobby] 🏠 Room {room_id} deleted (empty)")
-            return {
-                "status": "success",
-                "message": "Left room (room deleted)",
-                "data": {
-                    "room_id": room_id,
-                    "disbanded": True
-                }
-            }
-        
-        return {
-            "status": "success",
-            "message": "Left room",
-            "data": {
-                "room_id": room_id,
-                "disbanded": False,
-                "remaining_players": len(room["players"])
-            }
-        }
-
-
-def handle_start_game(data, player_name):
-    """啟動遊戲（只有房主可以啟動）"""
-    room_id = data.get("room_id")
-    
-    if not room_id:
-        return {"status": "error", "message": "Missing room_id"}
-    
-    with rooms_lock:
-        if room_id not in rooms:
-            return {"status": "error", "message": "Room not found"}
-        
-        room = rooms[room_id]
-        
-        if player_name != room["host"]:
-            return {"status": "error", "message": "Only host can start game"}
-        
-        if room["status"] != "waiting":
-            return {"status": "error", "message": "Game already started"}
-        
-        if len(room["players"]) < 2:
-            return {"status": "error", "message": "Need at least 2 players"}
-        
-        # 啟動遊戲 Server
-        game_name = room["game_name"]
-        game_dir = os.path.join(GAMES_DIR, game_name)
-        
-        # 尋找最新版本
-        with games_lock:
-            games_metadata = load_json_file(GAME_METADATA_FILE, {})
-            if game_name not in games_metadata:
-                return {"status": "error", "message": "Game not found"}
-            
-            version = games_metadata[game_name]["version"]
-            config = games_metadata[game_name].get("config", {})
-        
-        game_version_dir = os.path.join(game_dir, version)
-        
-        if not os.path.exists(game_version_dir):
-            return {"status": "error", "message": "Game files not found"}
-        
-        # 真正啟動 Game Server
-        server_command = config.get("server_command")
-        
-        if not server_command:
-            # 如果沒有 server_command，表示是純 Client 遊戲（如單機遊戲）
-            room["status"] = "playing"
-            return {
-                "status": "success",
-                "message": "Game starting (no server needed)",
-                "data": {
-                    "room_id": room_id,
-                    "game_name": game_name,
-                    "version": version,
-                    "players": room["players"],
-                    "config": config,
-                    "server_port": None
-                }
-            }
-        
-        # 啟動 Game Server
-        try:
-            import subprocess
-            import random
-            
-            # 分配動態 Port
-            game_server_port = random.randint(20000, 30000)
-            
-            # 準備啟動命令
-            if "{port}" in server_command:
-                cmd = server_command.replace("{port}", str(game_server_port))
-            else:
-                cmd = f"{server_command} {game_server_port}"
-            
-            print(f"[Lobby] Starting Game Server...")
-            print(f"[Lobby] Working directory: {game_version_dir}")
-            print(f"[Lobby] Command: {cmd}")
-            
-            # 在遊戲目錄下啟動 Server
-            # 輸出到日誌文件以便調試
-            log_file = open(f"/tmp/game_server_{game_server_port}.log", "w")
-            process = subprocess.Popen(
-                cmd,
-                shell=True,
-                cwd=game_version_dir,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,  # 將 stderr 也重定向到 stdout
-                preexec_fn=os.setsid if hasattr(os, 'setsid') else None
-            )
-            print(f"[Lobby] Game Server output: /tmp/game_server_{game_server_port}.log")
-            
-            # 等待一下確認進程啟動
-            import time
-            time.sleep(0.5)
-            
-            # 檢查進程是否還活著
-            if process.poll() is not None:
-                # 進程已經結束了
-                stdout, stderr = process.communicate()
-                error_msg = stderr.decode('utf-8') if stderr else stdout.decode('utf-8')
-                print(f"[Lobby] ❌ Game Server failed to start!")
-                print(f"[Lobby] Error: {error_msg}")
-                return {
-                    "status": "error",
-                    "message": f"Game Server failed to start: {error_msg[:200]}"
-                }
-            
-            # 儲存 process 資訊
-            room["game_server_pid"] = process.pid
-            room["game_server_port"] = game_server_port
-            room["status"] = "playing"
-            
-            print(f"✅ Game Server started: {game_name} on port {game_server_port} (PID: {process.pid})")
-            
-            return {
-                "status": "success",
-                "message": "Game server started",
-                "data": {
-                    "room_id": room_id,
-                    "game_name": game_name,
-                    "version": version,
-                    "players": room["players"],
-                    "config": config,
-                    # "server_host" 不設定，讓客戶端使用連接 Lobby 時的 host
-                    "server_port": game_server_port
-                }
-            }
-            
-        except Exception as e:
-            import traceback
-            print(f"[Lobby] ❌ Exception starting game server:")
-            print(traceback.format_exc())
-            return {
-                "status": "error",
-                "message": f"Failed to start game server: {str(e)}"
-            }
-
-
-# ==================== Lobby/Player 相關功能 ====================
-
-def handle_list_games():
-    """列出所有可用遊戲"""
-    with games_lock:
-        games_metadata = load_json_file(GAME_METADATA_FILE, {})
-        
-        active_games = []
-        for game_name, info in games_metadata.items():
-            if info["status"] == "active":
-                active_games.append({
-                    "game_name": game_name,
-                    "developer": info["developer"],
-                    "game_type": info["game_type"],
-                    "description": info["description"],
-                    "max_players": info["max_players"],
-                    "version": info["version"],
-                    "average_rating": info["average_rating"],
-                    "review_count": info["review_count"],
-                    "download_count": info["download_count"]
-                })
-        
-        return {
-            "status": "success",
-            "data": {"games": active_games}
-        }
-
-
-def handle_get_game_info(data):
-    """取得遊戲詳細資訊"""
-    game_name = data.get("game_name")
-    
-    if not game_name:
-        return {"status": "error", "message": "Missing game_name"}
-    
-    with games_lock:
-        games_metadata = load_json_file(GAME_METADATA_FILE, {})
-        
-        if game_name not in games_metadata:
-            return {"status": "error", "message": "Game not found"}
-        
-        game_info = games_metadata[game_name].copy()
-        
-        # 取得評論
-        reviews = load_json_file(REVIEWS_FILE, {})
-        game_reviews = reviews.get(game_name, [])
-        
-        return {
-            "status": "success",
-            "data": {
-                "game_info": game_info,
-                "reviews": game_reviews[-10:]  # 最新 10 則評論
-            }
-        }
-
-
-def handle_download_game(data):
-    """處理遊戲下載請求"""
-    game_name = data.get("game_name")
-    
-    if not game_name:
-        return {"status": "error", "message": "Missing game_name"}
-    
-    with games_lock:
-        games_metadata = load_json_file(GAME_METADATA_FILE, {})
-        
-        if game_name not in games_metadata:
-            return {"status": "error", "message": "Game not found"}
-        
-        game_info = games_metadata[game_name]
-        
-        if game_info["status"] != "active":
-            return {"status": "error", "message": "Game is not available"}
-        
-        version = game_info["version"]
-        game_dir = os.path.join(GAMES_DIR, game_name, version)
-        
-        if not os.path.exists(game_dir):
-            return {"status": "error", "message": "Game files not found"}
-        
-        # 打包遊戲檔案
-        try:
-            import zipfile
-            import io
-            
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-                for root, dirs, files in os.walk(game_dir):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, game_dir)
-                        zip_file.write(file_path, arcname)
-            
-            zip_buffer.seek(0)
-            game_files_b64 = base64.b64encode(zip_buffer.read()).decode('utf-8')
-            
-            # 更新下載次數
-            games_metadata[game_name]["download_count"] += 1
-            save_json_file(GAME_METADATA_FILE, games_metadata)
-            
-            return {
-                "status": "success",
-                "data": {
-                    "game_name": game_name,
-                    "version": version,
-                    "game_files": game_files_b64,
-                    "config": game_info.get("config", {})
-                }
-            }
-        
-        except Exception as e:
-            return {"status": "error", "message": f"Failed to pack game: {str(e)}"}
-
-
-def handle_submit_review(data, player_name):
-    """處理遊戲評分與留言"""
-    game_name = data.get("game_name")
-    rating = data.get("rating")  # 1-5
-    comment = data.get("comment", "")
-    
-    if not game_name or rating is None:
-        return {"status": "error", "message": "Missing required fields"}
-    
-    if not (1 <= rating <= 5):
-        return {"status": "error", "message": "Rating must be between 1 and 5"}
-    
-    with reviews_lock:
-        reviews = load_json_file(REVIEWS_FILE, {})
-        
-        if game_name not in reviews:
-            reviews[game_name] = []
-        
-        # 檢查是否已評論過
-        for review in reviews[game_name]:
-            if review["player"] == player_name:
-                return {"status": "error", "message": "You have already reviewed this game"}
-        
-        # 新增評論
-        reviews[game_name].append({
-            "player": player_name,
-            "rating": rating,
-            "comment": comment,
-            "timestamp": time.time()
+            "game_files": game_files,
+            "config": config
         })
         
-        # 更新遊戲評分
-        with games_lock:
-            games_metadata = load_json_file(GAME_METADATA_FILE, {})
-            
-            if game_name in games_metadata:
-                all_ratings = [r["rating"] for r in reviews[game_name]]
-                avg_rating = sum(all_ratings) / len(all_ratings)
-                
-                games_metadata[game_name]["average_rating"] = round(avg_rating, 2)
-                games_metadata[game_name]["review_count"] = len(all_ratings)
-                
-                save_json_file(GAME_METADATA_FILE, games_metadata)
-        
-        if save_json_file(REVIEWS_FILE, reviews):
-            return {
-                "status": "success",
-                "message": "Review submitted successfully"
-            }
+        if response["status"] == "success":
+            print(f"✅ 上架成功！")
+            print(f"   遊戲 ID: {response['data']['game_id']}")
+            print(f"   版本: {response['data']['version']}")
         else:
-            return {"status": "error", "message": "Failed to save review"}
-
-
-# ==================== Developer Client 處理 ====================
-
-def handle_developer_client(conn, addr):
-    """處理 Developer Client 連線"""
-    print(f"[Developer] Connected from {addr}")
-    developer_name = None
+            print(f"❌ 上架失敗: {response.get('message', '')}")
+        
+        input("\n按 Enter 繼續...")
     
-    try:
-        # === 握手驗證 ===
-        # 等待 Client 發送身份標識
-        raw = recv_frame(conn)
-        if not raw:
-            print(f"[Developer] No handshake from {addr}")
-            conn.close()
+    def update_game(self):
+        """更新遊戲"""
+        print("\n🔄 更新遊戲")
+        
+        # 1. 先取得遊戲列表
+        response = self.send_request("list_my_games", {})
+        
+        if response["status"] != "success":
+            print(f"❌ 無法取得遊戲列表: {response.get('message', '')}")
+            input("\n按 Enter 繼續...")
             return
         
-        try:
-            handshake = json.loads(raw.decode('utf-8'))
-            client_type = handshake.get("client_type")
-            
-            # 檢查身份
-            if client_type != "developer":
-                error_msg = {
-                    "status": "error",
-                    "message": "❌ 這是 Developer Server！你連到了錯誤的 Port。\n請使用 Developer Client 連線，或改用 Lobby Port。"
-                }
-                send_frame(conn, json.dumps(error_msg).encode('utf-8'))
-                print(f"[Developer] Wrong client type '{client_type}' from {addr}, closing connection")
-                conn.close()
-                return
-            
-            # 發送確認
-            handshake_response = {
-                "status": "success",
-                "message": "Connected to Developer Server",
-                "server_type": "developer"
-            }
-            send_frame(conn, json.dumps(handshake_response).encode('utf-8'))
-            print(f"[Developer] Handshake successful with {addr}")
+        games = response["data"]["games"]
         
-        except json.JSONDecodeError:
-            print(f"[Developer] Invalid handshake from {addr}")
-            conn.close()
+        if not games:
+            print("  你還沒有上架任何遊戲")
+            input("\n按 Enter 繼續...")
             return
-        # === 握手驗證結束 ===
         
+        # 2. 顯示可更新的遊戲列表（只顯示 active 的）
+        active_games = [g for g in games if g["status"] == "active"]
+        
+        if not active_games:
+            print("  沒有可更新的遊戲（所有遊戲都已下架）")
+            input("\n按 Enter 繼續...")
+            return
+        
+        print(f"\n可更新的遊戲 (共 {len(active_games)} 款):\n")
+        for i, game in enumerate(active_games, 1):
+            print(f"  {i}. {game['game_name']} (v{game['version']})")
+            
+            game_type = game.get('game_type', 'Unknown')
+            download_count = game.get('download_count', 0)
+            average_rating = game.get('average_rating', 0.0)
+            
+            print(f"     {game_type} | 下載: {download_count} 次 | 評分: {average_rating:.1f}/5.0")
+            print()
+        
+        print("  0. 取消")
+        
+        # 3. 選擇遊戲
         while True:
-            raw = recv_frame(conn)
-            if not raw:
-                break
+            choice = self.get_input(f"請選擇要更新的遊戲 (0-{len(active_games)})", required=False)
+            if not choice:
+                continue
             
             try:
-                request = json.loads(raw.decode('utf-8'))
-                action = request.get("action")
-                data = request.get("data", {})
-                
-                print(f"[Developer] Request from {addr}: {action}")
-                
-                # 登入
-                if action == "login":
-                    response = handle_developer_login(data)
-                    if response["status"] == "success":
-                        developer_name = data.get("username")
-                
-                # 需要登入的操作
-                elif not developer_name:
-                    response = {"status": "error", "message": "Please login first"}
-                
-                elif action == "upload_game":
-                    response = handle_upload_game(data, developer_name)
-                
-                elif action == "update_game":
-                    response = handle_update_game(data, developer_name)
-                
-                elif action == "remove_game":
-                    response = handle_remove_game(data, developer_name)
-                
-                elif action == "list_my_games":
-                    response = handle_list_my_games(developer_name)
-                
-                # 檢查是否為 Player action（錯誤連線）
-                elif action in ["register", "list_games", "download_game", "create_room", 
-                              "join_room", "leave_room", "start_game", "get_room_status", "list_rooms"]:
-                    response = {
-                        "status": "error", 
-                        "message": "❌ 這是 Developer Server！請使用 Lobby Port 連線。"
-                    }
-                
+                idx = int(choice)
+                if idx == 0:
+                    return
+                if 1 <= idx <= len(active_games):
+                    game_name = active_games[idx - 1]["game_name"]
+                    current_version = active_games[idx - 1]["version"]
+                    break
                 else:
-                    response = {"status": "error", "message": f"Unknown action: {action}"}
-                
-                send_frame(conn, json.dumps(response).encode('utf-8'))
-            
-            except json.JSONDecodeError:
-                response = {"status": "error", "message": "Invalid JSON"}
-                send_frame(conn, json.dumps(response).encode('utf-8'))
-    
-    except Exception as e:
-        print(f"[Developer] Error with {addr}: {e}")
-    
-    finally:
-        conn.close()
-        print(f"[Developer] Disconnected from {addr}")
-
-
-# ==================== Lobby Client 處理 ====================
-
-def handle_lobby_client(conn, addr):
-    """處理 Lobby Client 連線"""
-    print(f"[Lobby] Connected from {addr}")
-    player_name = None
-    
-    try:
-        # === 握手驗證 ===
-        # 等待 Client 發送身份標識
-        raw = recv_frame(conn)
-        if not raw:
-            print(f"[Lobby] No handshake from {addr}")
-            conn.close()
+                    print(f"❌ 請輸入 0-{len(active_games)}")
+            except ValueError:
+                print("❌ 請輸入數字")
+        
+        print(f"\n選擇的遊戲: {game_name} (當前版本: {current_version})")
+        
+        # 4. 輸入新版本號
+        new_version = self.get_input("新版本號")
+        
+        # 5. 驗證版本號格式（可選）
+        # 可以加入版本號比較，確保新版本 > 當前版本
+        
+        # 6. 輸入更新說明
+        update_notes = self.get_input("更新說明", required=False)
+        
+        # 7. 輸入遊戲目錄
+        game_dir = self.get_input("新版本遊戲檔案目錄")
+        
+        # 8. 打包遊戲檔案
+        print("\n📦 正在打包遊戲檔案...")
+        game_files = self.pack_game_directory(game_dir)
+        
+        if not game_files:
+            print(f"❌ 無法讀取遊戲目錄: {game_dir}")
+            input("按 Enter 繼續...")
             return
         
-        try:
-            handshake = json.loads(raw.decode('utf-8'))
-            client_type = handshake.get("client_type")
-            
-            # 檢查身份
-            if client_type != "player":
-                error_msg = {
-                    "status": "error",
-                    "message": "❌ 這是 Lobby Server（玩家用）！你連到了錯誤的 Port。\n請使用 Player Client 連線，或改用 Developer Port。"
-                }
-                send_frame(conn, json.dumps(error_msg).encode('utf-8'))
-                print(f"[Lobby] Wrong client type '{client_type}' from {addr}, closing connection")
-                conn.close()
-                return
-            
-            # 發送確認
-            handshake_response = {
-                "status": "success",
-                "message": "Connected to Lobby Server",
-                "server_type": "lobby"
-            }
-            send_frame(conn, json.dumps(handshake_response).encode('utf-8'))
-            print(f"[Lobby] Handshake successful with {addr}")
+        print(f"✅ 打包完成")
         
-        except json.JSONDecodeError:
-            print(f"[Lobby] Invalid handshake from {addr}")
-            conn.close()
+        # 9. 確認更新
+        print(f"\n確認更新資訊:")
+        print(f"  遊戲名稱: {game_name}")
+        print(f"  當前版本: {current_version}")
+        print(f"  新版本: {new_version}")
+        print(f"  更新說明: {update_notes or '無'}")
+        
+        confirm = self.get_input("\n確定要更新嗎？ (yes/no)", required=False)
+        if confirm.lower() != "yes":
+            print("❌ 已取消更新")
+            input("按 Enter 繼續...")
             return
-        # === 握手驗證結束 ===
         
+        # 10. 上傳更新
+        print("\n⏳ 上傳中...")
+        
+        response = self.send_request("update_game", {
+            "game_name": game_name,
+            "version": new_version,
+            "game_files": game_files,
+            "update_notes": update_notes
+        })
+        
+        if response["status"] == "success":
+            print(f"✅ 更新成功！")
+            print(f"   新版本: {response['data']['new_version']}")
+        else:
+            print(f"❌ 更新失敗: {response.get('message', '')}")
+        
+        input("\n按 Enter 繼續...")
+    
+    def remove_game(self):
+        """下架遊戲"""
+        print("\n🗑️  下架遊戲")
+        
+        # 先取得遊戲列表
+        response = self.send_request("list_my_games", {})
+        
+        if response["status"] != "success":
+            print(f"❌ 無法取得遊戲列表: {response.get('message', '')}")
+            input("\n按 Enter 繼續...")
+            return
+        
+        games = response["data"]["games"]
+        
+        if not games:
+            print("  你還沒有上架任何遊戲")
+            input("\n按 Enter 繼續...")
+            return
+        
+        # 顯示遊戲列表
+        print(f"\n你的遊戲 (共 {len(games)} 款):\n")
+        for i, game in enumerate(games, 1):
+            status_icon = "✅" if game["status"] == "active" else "❌"
+            print(f"  {i}. {status_icon} {game['game_name']} (v{game['version']})")
+            
+            # 使用 .get() 防止 KeyError
+            game_type = game.get('game_type', 'Unknown')
+            download_count = game.get('download_count', 0)
+            average_rating = game.get('average_rating', 0.0)
+            
+            print(f"     {game_type} | 下載: {download_count} 次 | 評分: {average_rating:.1f}/5.0")
+            print()
+        
+        print("  0. 取消")
+        
+        # 選擇遊戲
         while True:
-            raw = recv_frame(conn)
-            if not raw:
-                break
+            choice = self.get_input(f"請選擇要下架的遊戲 (0-{len(games)})", required=False)
+            if not choice:
+                continue
             
             try:
-                request = json.loads(raw.decode('utf-8'))
-                action = request.get("action")
-                data = request.get("data", {})
-                
-                print(f"[Lobby] Request from {addr}: {action}")
-                
-                # 初始化 response
-                response = {"status": "error", "message": "Action not handled"}
-                
-                try:
-                    # 不需登入的操作
-                    if action == "list_games":
-                        response = handle_list_games()
-                    
-                    elif action == "get_game_info":
-                        response = handle_get_game_info(data)
-                    
-                    # 註冊和登入
-                    elif action == "register":
-                        username = data.get("username")
-                        password = data.get("password")
-                        
-                        if not username or not password:
-                            response = {"status": "error", "message": "Missing username or password"}
-                        else:
-                            try:
-                                # 連線到 DB Server 註冊
-                                db_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                db_sock.connect(("localhost", DB_PORT))
-                                
-                                db_request = {
-                                    "collection": "Player",
-                                    "action": "create",
-                                    "data": {"name": username, "password": password}
-                                }
-                                
-                                send_frame(db_sock, json.dumps(db_request).encode('utf-8'))
-                                db_response = json.loads(recv_frame(db_sock).decode('utf-8'))
-                                db_sock.close()
-                                
-                                response = db_response
-                                if response["status"] == "success":
-                                    print(f"[Lobby] Player {username} registered from {addr}")
-                            
-                            except Exception as e:
-                                response = {"status": "error", "message": f"Register failed: {str(e)}"}
-                    
-                    elif action == "login":
-                        username = data.get("username")
-                        password = data.get("password")
-                        
-                        if not username or not password:
-                            response = {"status": "error", "message": "Missing username or password"}
-                        else:
-                            try:
-                                # 連線到 DB Server 驗證
-                                db_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                db_sock.connect(("localhost", DB_PORT))
-                                
-                                db_request = {
-                                    "collection": "Player",
-                                    "action": "query",
-                                    "data": {
-                                        "type": "login",
-                                        "name": username,
-                                        "password": password
-                                    }
-                                }
-                                
-                                send_frame(db_sock, json.dumps(db_request).encode('utf-8'))
-                                db_response = json.loads(recv_frame(db_sock).decode('utf-8'))
-                                db_sock.close()
-                                
-                                if db_response["status"] == "success":
-                                    # 檢查是否已經登入
-                                    with online_players_lock:
-                                        if username in online_players:
-                                            response = {"status": "error", "message": "此帳號已在其他地方登入"}
-                                            print(f"[Lobby] Login rejected: {username} already online")
-                                        else:
-                                            # 記錄線上玩家
-                                            online_players[username] = (conn, addr)
-                                            player_name = username
-                                            response = {"status": "success", "message": "Login successful"}
-                                            print(f"[Lobby] Player {username} logged in from {addr}")
-                                else:
-                                    response = {"status": "error", "message": "Invalid username or password"}
-                            
-                            except Exception as e:
-                                response = {"status": "error", "message": f"Login failed: {str(e)}"}
-                    
-                    elif not player_name:
-                        response = {"status": "error", "message": "Please login first"}
-                    
-                    elif action == "download_game":
-                        response = handle_download_game(data)
-                    
-                    elif action == "submit_review":
-                        response = handle_submit_review(data, player_name)
-                    
-                    # 房間相關操作
-                    elif action == "create_room":
-                        response = handle_create_room(data, player_name)
-                    
-                    elif action == "list_rooms":
-                        response = handle_list_rooms()
-                    
-                    elif action == "get_room_status":
-                        response = handle_get_room_status(data, player_name)
-                    
-                    elif action == "join_room":
-                        response = handle_join_room(data, player_name)
-                    
-                    elif action == "leave_room":
-                        response = handle_leave_room(data, player_name)
-                    
-                    elif action == "start_game":
-                        response = handle_start_game(data, player_name)
-                    
-                    # 檢查是否為 Developer action（錯誤連線）
-                    elif action in ["upload_game", "update_game", "remove_game", "list_my_games"]:
-                        response = {
-                            "status": "error", 
-                            "message": "❌ 這是 Lobby Server（玩家用）！請使用 Developer Port 連線。"
-                        }
-                    
-                    else:
-                        response = {"status": "error", "message": f"Unknown action: {action}"}
-                
-                except Exception as e:
-                    # 處理 action 時出錯，回傳錯誤但不斷線
-                    import traceback
-                    print(f"[Lobby] ❌ Error handling action '{action}': {e}")
-                    print(traceback.format_exc())
-                    response = {
-                        "status": "error",
-                        "message": f"Server error while handling {action}: {str(e)}"
-                    }
-                
-                # 回傳 response
-                send_frame(conn, json.dumps(response).encode('utf-8'))
-            
-            except json.JSONDecodeError:
-                response = {"status": "error", "message": "Invalid JSON"}
-                send_frame(conn, json.dumps(response).encode('utf-8'))
-    
-    except Exception as e:
-        print(f"[Lobby] Error with {addr}: {e}")
-    
-    finally:
-        # 移除線上玩家記錄
-        if player_name:
-            with online_players_lock:
-                if player_name in online_players:
-                    del online_players[player_name]
-                    print(f"[Lobby] Player {player_name} logged out")
+                choice_num = int(choice)
+                if choice_num == 0:
+                    return
+                if 1 <= choice_num <= len(games):
+                    game_name = games[choice_num - 1]['game_name']
+                    break
+                else:
+                    print(f"❌ 請輸入 0-{len(games)}")
+            except ValueError:
+                print("❌ 請輸入數字")
         
-        conn.close()
-        print(f"[Lobby] Disconnected from {addr}")
-
-
-# ==================== 主程式 ====================
-
-def start_developer_server():
-    """啟動 Developer Server"""
-    global DEVELOPER_PORT
+        # 確認
+        confirm = self.get_input(f"確定要下架 '{game_name}' 嗎? (yes/no)", required=False) or "no"
+        
+        if confirm.lower() not in ["yes", "y"]:
+            print("❌ 已取消")
+            input("按 Enter 繼續...")
+            return
+        
+        response = self.send_request("remove_game", {
+            "game_name": game_name
+        })
+        
+        if response["status"] == "success":
+            print(f"✅ 下架成功！")
+        else:
+            print(f"❌ 下架失敗: {response.get('message', '')}")
+        
+        input("\n按 Enter 繼續...")
     
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((HOST, 0))
-    DEVELOPER_PORT = server_socket.getsockname()[1]
-    server_socket.listen(5)
-    
-    print(f"[Developer Server] Listening on {HOST}:{DEVELOPER_PORT}")
-    
-    try:
-        while True:
-            conn, addr = server_socket.accept()
-            client_thread = threading.Thread(
-                target=handle_developer_client,
-                args=(conn, addr),
-                daemon=True
-            )
-            client_thread.start()
-    except:
-        pass
-    finally:
-        server_socket.close()
-
-
-def start_lobby_server():
-    """啟動 Lobby Server"""
-    global LOBBY_PORT
-    
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((HOST, 0))
-    LOBBY_PORT = server_socket.getsockname()[1]
-    server_socket.listen(5)
-    
-    print(f"[Lobby Server] Listening on {HOST}:{LOBBY_PORT}")
-    
-    try:
-        while True:
-            conn, addr = server_socket.accept()
-            client_thread = threading.Thread(
-                target=handle_lobby_client,
-                args=(conn, addr),
-                daemon=True
-            )
-            client_thread.start()
-    except:
-        pass
-    finally:
-        server_socket.close()
+    def run(self):
+        """執行 Client"""
+        self.clear_screen()
+        print("\n" + "="*60)
+        print("  🎮 Game Store - Developer Client")
+        print("="*60)
+        
+        if not self.connect():
+            return
+        
+        print("✅ 已連線到 Developer Server")
+        
+        if self.login_menu():
+            self.main_menu()
+        
+        self.sock.close()
+        print("\n👋 再見！")
 
 
 def main():
-    global DB_PORT
+    if len(sys.argv) < 3:
+        print("Usage: python3 developer_client.py <host> <dev_port>")
+        print("\n提示: 從 .dev_port 檔案讀取 port")
+        
+        # 嘗試從檔案讀取
+        if os.path.exists(".dev_port"):
+            with open(".dev_port") as f:
+                port = int(f.read().strip())
+            host = "localhost"
+        else:
+            print("\n❌ 找不到 .dev_port 檔案")
+            print("請先執行 ./start_game_store.sh 啟動 Server")
+            sys.exit(1)
+    else:
+        host = sys.argv[1]
+        port = int(sys.argv[2])
     
-    if len(sys.argv) < 2:
-        print("Usage: python3 game_store_server.py <DB_PORT>")
-        sys.exit(1)
-    
-    try:
-        DB_PORT = int(sys.argv[1])
-    except ValueError:
-        print("Error: DB_PORT must be an integer")
-        sys.exit(1)
-    
-    print("\n" + "="*60)
-    print("Game Store Server Starting...")
-    print("="*60)
-    
-    # 啟動兩個 Server
-    dev_thread = threading.Thread(target=start_developer_server, daemon=True)
-    lobby_thread = threading.Thread(target=start_lobby_server, daemon=True)
-    
-    dev_thread.start()
-    lobby_thread.start()
-    
-    # 等待 ports 被分配
-    time.sleep(0.5)
-    
-    print("\n" + "="*60)
-    print("Game Store Server Started Successfully!")
-    print("="*60)
-    print(f"\n🎮 Developer Server Port: {DEVELOPER_PORT}")
-    print(f"🎯 Lobby Server Port: {LOBBY_PORT}")
-    print(f"💾 DB Server Port: {DB_PORT}")
-    print("\n" + "="*60)
-    print("Press Ctrl+C to stop")
-    print("="*60 + "\n")
-    
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\n[Game Store] Shutting down...")
+    client = DeveloperClient(host, port)
+    client.run()
 
 
 if __name__ == "__main__":

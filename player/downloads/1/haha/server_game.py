@@ -195,7 +195,6 @@ class TetrisGameServer:
         self.running = True
         self.broadcast_interval = 0.1  # 每0.1秒廣播一次狀態
         self.player_counter = 0  # 玩家計數器，用於生成唯一ID
-        self.game_start_time = None  # 遊戲開始時間
         
     
     def broadcast_game_state(self):
@@ -208,18 +207,11 @@ class TetrisGameServer:
                     # 等待兩個玩家都加入
                     continue
                 
-                # 記錄遊戲開始時間
-                if self.game_start_time is None:
-                    self.game_start_time = time.time()
-                    print(f"[Server] Game started with {len(self.games)} players!")
-                
                 # 收集所有玩家的狀態
                 states = {}
                 for player_name, game in self.games.items():
                     game.auto_drop()  # 自動下落
                     states[player_name] = game.get_state()
-                
-                print(f"[Broadcast] Sending game state to {len(self.connections)} players")
                 
                 # 廣播給所有連接的玩家
                 message = {
@@ -243,21 +235,16 @@ class TetrisGameServer:
                     if player_name in self.games:
                         del self.games[player_name]
                 
-                # 檢查遊戲結束條件（遊戲開始3秒後才檢查）
-                if len(self.games) >= 2 and self.game_start_time:
-                    elapsed = time.time() - self.game_start_time
-                    if elapsed >= 3.0:  # 給玩家3秒反應時間
-                        for player_name, game in self.games.items():
-                            # 檢查是否有玩家完成遊戲（清除1行）或遊戲結束
-                            if game.lines_cleared >= 1 or game.game_over:
-                                print(f"[Server] Game ending: {player_name} - lines={game.lines_cleared}, game_over={game.game_over}")
-                                self.end_game()
-                                return
+                # 檢查遊戲結束條件
+                if len(self.games) >= 2:
+                    for player_name, game in self.games.items():
+                        # 檢查是否有玩家完成遊戲（清除1行）或遊戲結束
+                        if game.lines_cleared >= 1 or game.game_over:
+                            self.end_game()
+                            return
                             
             except Exception as e:
-                import traceback
                 print(f"[Broadcast] Error: {e}")
-                traceback.print_exc()
     
     def end_game(self):
         """結束遊戲並發送結果"""
@@ -328,6 +315,7 @@ class TetrisGameServer:
                         response = {
                             "status": "success",
                             "message": "Joined game",
+                            "player_name": player_name,  # 告訴客戶端分配的名稱
                             "seed": self.game_seed,
                             "state": self.games[player_name].get_state()
                         }

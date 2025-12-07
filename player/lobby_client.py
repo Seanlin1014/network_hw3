@@ -183,65 +183,220 @@ class LobbyClient:
             
             if self.username == "Guest":
                 options = [
-                    "瀏覽遊戲商城",
-                    "查看遊戲詳情",
+                    "遊戲商城",
                     "離開"
                 ]
-            else:
-                options = [
-                    "瀏覽遊戲商城",
-                    "查看遊戲詳情",
-                    "下載/更新遊戲",
-                    "我的遊戲",
-                    "---房間功能---",
-                    "查看所有房間",
-                    "建立房間",
-                    "加入房間",
-                    "離開房間" if self.current_room else "(目前不在房間)",
-                    "登出"
-                ]
-            
-            self.show_menu(menu_title, options)
-            choice = self.get_input("請選擇")
-            
-            if self.username == "Guest":
+                self.show_menu(menu_title, options)
+                choice = self.get_input("請選擇")
+                
                 if choice == "1":
-                    self.browse_games()
+                    self.game_store_menu()
                 elif choice == "2":
-                    self.view_game_details()
-                elif choice == "3":
                     self.running = False
                 else:
                     print("❌ 無效的選項")
                     input("按 Enter 繼續...")
             else:
+                # 根據是否在房間顯示不同選項
+                if self.current_room:
+                    options = [
+                        "遊戲商城",
+                        "房間功能",
+                        "查看線上玩家",
+                        "登出"
+                    ]
+                else:
+                    options = [
+                        "遊戲商城",
+                        "房間大廳",
+                        "查看線上玩家",
+                        "登出"
+                    ]
+                
+                self.show_menu(menu_title, options)
+                choice = self.get_input("請選擇")
+                
                 if choice == "1":
-                    self.browse_games()
+                    self.game_store_menu()
                 elif choice == "2":
-                    self.view_game_details()
-                elif choice == "3":
-                    self.download_game()
-                elif choice == "4":
-                    self.my_games()
-                elif choice == "6":
-                    self.list_rooms()
-                elif choice == "7":
-                    self.create_room()
-                elif choice == "8":
-                    self.join_room()
-                elif choice == "9":
                     if self.current_room:
-                        self.leave_room()
+                        self.room_menu()
                     else:
-                        print("❌ 你目前不在任何房間")
-                        input("按 Enter 繼續...")
-                elif choice == "10":
+                        self.room_lobby_menu()
+                elif choice == "3":
+                    self.list_online_players()
+                elif choice == "4":
                     self.running = False
                     print("👋 登出成功")
                     break
                 else:
                     print("❌ 無效的選項")
                     input("按 Enter 繼續...")
+    
+    def game_store_menu(self):
+        """遊戲商城子選單"""
+        while True:
+            self.clear_screen()
+            
+            options = [
+                "瀏覽所有遊戲",
+                "下載/更新遊戲",
+                "我的遊戲",
+                "撰寫評論",
+                "返回"
+            ]
+            
+            self.show_menu("🎮 遊戲商城", options)
+            choice = self.get_input("請選擇")
+            
+            if choice == "1":
+                self.browse_games()
+            elif choice == "2":
+                self.download_game()
+            elif choice == "3":
+                self.my_games()
+            elif choice == "4":
+                self.write_review()
+            elif choice == "5":
+                break
+            else:
+                print("❌ 無效的選項")
+                input("按 Enter 繼續...")
+    
+    def room_lobby_menu(self):
+        """房間大廳子選單（未在房間時）"""
+        while True:
+            self.clear_screen()
+            
+            options = [
+                "查看所有房間",
+                "建立房間",
+                "加入房間",
+                "返回"
+            ]
+            
+            self.show_menu("🏠 房間大廳", options)
+            choice = self.get_input("請選擇")
+            
+            if choice == "1":
+                self.list_rooms()
+            elif choice == "2":
+                self.create_room()
+                if self.current_room:
+                    # 建立房間後進入房間選單
+                    self.room_menu()
+                    break
+            elif choice == "3":
+                self.join_room()
+                if self.current_room:
+                    # 加入房間後進入房間選單
+                    self.room_menu()
+                    break
+            elif choice == "4":
+                break
+            else:
+                print("❌ 無效的選項")
+                input("按 Enter 繼續...")
+    
+    def room_menu(self):
+        """房間功能子選單（已在房間時）"""
+        while self.current_room:
+            self.clear_screen()
+            
+            # 取得房間狀態
+            response = self.send_request("get_room_status", {"room_id": self.current_room})
+            
+            is_host = False
+            room_status = "unknown"
+            room_data = None
+            
+            if response and response.get("status") == "success":
+                room_data = response["data"]
+                is_host = room_data.get("is_host", False)
+                room_status = room_data.get("status", "unknown")
+                players = room_data.get("players", [])
+                game_name = room_data.get("game_name", "?")
+                
+                # 顯示房間資訊
+                status_text = {"waiting": "⏳ 等待中", "playing": "🎮 遊戲中"}
+                print(f"\n🚪 房間: {self.current_room}")
+                print(f"   遊戲: {game_name} | 狀態: {status_text.get(room_status, room_status)}")
+                print(f"   玩家: {', '.join(players)}")
+                if is_host:
+                    print("   👑 你是房主")
+                print()
+            elif response and response.get("status") == "error":
+                if "not found" in response.get("message", "").lower():
+                    print("\n⚠️  房間已被解散")
+                    self.current_room = None
+                    input("\n按 Enter 繼續...")
+                    return
+            
+            # 根據身份和狀態顯示選項
+            if is_host:
+                if room_status == "playing":
+                    options = [
+                        "查看房間狀態",
+                        "重置房間",
+                        "離開房間",
+                        "返回主選單"
+                    ]
+                else:
+                    options = [
+                        "查看房間狀態",
+                        "啟動遊戲",
+                        "離開房間",
+                        "返回主選單"
+                    ]
+            else:
+                if room_status == "playing":
+                    options = [
+                        "查看房間狀態",
+                        "加入遊戲",
+                        "離開房間",
+                        "返回主選單"
+                    ]
+                else:
+                    options = [
+                        "查看房間狀態",
+                        "等待房主啟動",
+                        "離開房間",
+                        "返回主選單"
+                    ]
+            
+            self.show_menu("房間功能", options)
+            choice = self.get_input("請選擇")
+            
+            if choice == "1":
+                self.check_room_status()
+            elif choice == "2":
+                if is_host:
+                    if room_status == "playing":
+                        self.reset_room()
+                    else:
+                        self.start_game()
+                else:
+                    if room_status == "playing" and room_data and room_data.get("server_port"):
+                        self._launch_game_client(room_data)
+                    else:
+                        print("⏳ 請等待房主啟動遊戲...")
+                        input("\n按 Enter 繼續...")
+            elif choice == "3":
+                confirm = self.get_input("確定要離開房間嗎? (y/n)", required=False) or "n"
+                if confirm.lower() in ["yes", "y"]:
+                    response = self.send_request("leave_room", {"room_id": self.current_room})
+                    if response["status"] == "success":
+                        print("✅ 已離開房間")
+                        self.current_room = None
+                    else:
+                        print(f"❌ 離開失敗: {response.get('message', '')}")
+                    input("\n按 Enter 繼續...")
+                    break
+            elif choice == "4":
+                break  # 返回主選單但保持在房間
+            else:
+                print("❌ 無效的選項")
+                input("按 Enter 繼續...")
     
     def browse_games(self):
         """瀏覽遊戲"""
@@ -273,8 +428,53 @@ class LobbyClient:
         """查看遊戲詳情"""
         print("\n🔍 遊戲詳情")
         
-        game_name = self.get_input("遊戲名稱")
+        # 先取得遊戲列表
+        response = self.send_request("list_games", {})
         
+        if response["status"] != "success":
+            print(f"❌ 無法取得遊戲列表: {response.get('message', '')}")
+            input("\n按 Enter 繼續...")
+            return
+        
+        games = response["data"]["games"]
+        
+        if not games:
+            print("  目前沒有任何遊戲")
+            input("\n按 Enter 繼續...")
+            return
+        
+        # 顯示遊戲列表
+        print(f"\n可用遊戲 (共 {len(games)} 款):\n")
+        for i, game in enumerate(games, 1):
+            print(f"  {i}. {game['game_name']} (v{game['version']})")
+            print(f"     {game['game_type']} | 最多 {game['max_players']} 人 | 評分: {game['average_rating']:.1f}/5.0")
+            print()
+        
+        print("  0. 取消")
+        
+        # 選擇遊戲
+        while True:
+            choice = self.get_input("\n請選擇要查看的遊戲 (輸入數字或名稱)")
+            
+            try:
+                choice_num = int(choice)
+                if choice_num == 0:
+                    return
+                if 1 <= choice_num <= len(games):
+                    game_name = games[choice_num - 1]['game_name']
+                    break
+                else:
+                    print(f"❌ 請輸入 0-{len(games)}")
+            except ValueError:
+                # 當作遊戲名稱處理
+                game_names = [g['game_name'] for g in games]
+                if choice in game_names:
+                    game_name = choice
+                    break
+                else:
+                    print(f"❌ 找不到遊戲「{choice}」，請輸入正確的數字或名稱")
+        
+        # 取得遊戲詳情
         response = self.send_request("get_game_info", {"game_name": game_name})
         
         if response["status"] == "success":
@@ -405,23 +605,185 @@ class LobbyClient:
         
         if not games:
             print("  你還沒有下載任何遊戲")
+            input("\n按 Enter 繼續...")
+            return
+        
+        print(f"\n  共 {len(games)} 款遊戲:\n")
+        for i, game_name in enumerate(games, 1):
+            game_dir = os.path.join(player_dir, game_name)
+            version_file = os.path.join(game_dir, ".version")
+            
+            if os.path.exists(version_file):
+                with open(version_file) as f:
+                    version = f.read().strip()
+            else:
+                version = "unknown"
+            
+            print(f"  {i}. {game_name} (v{version})")
+            print(f"     位置: {game_dir}")
+            print()
+        
+        # 提供刪除選項
+        print("="*50)
+        print("  D. 刪除遊戲")
+        print("  0. 返回")
+        print("="*50)
+        
+        choice = self.get_input("\n請選擇").strip().lower()
+        
+        if choice == 'd':
+            self.delete_game(games, player_dir)
+        elif choice == '0':
+            return
         else:
-            print(f"\n  共 {len(games)} 款遊戲:\n")
-            for i, game_name in enumerate(games, 1):
-                game_dir = os.path.join(player_dir, game_name)
-                version_file = os.path.join(game_dir, ".version")
-                
-                if os.path.exists(version_file):
-                    with open(version_file) as f:
-                        version = f.read().strip()
+            print("❌ 無效的選項")
+            input("按 Enter 繼續...")
+    
+    def delete_game(self, games, player_dir):
+        """刪除已下載的遊戲"""
+        print("\n🗑️  刪除遊戲")
+        print("\n已下載的遊戲:")
+        for i, game_name in enumerate(games, 1):
+            print(f"  {i}. {game_name}")
+        print(f"  0. 取消")
+        
+        while True:
+            choice = self.get_input("\n請選擇要刪除的遊戲 (輸入數字)")
+            
+            try:
+                choice_num = int(choice)
+                if choice_num == 0:
+                    return
+                if 1 <= choice_num <= len(games):
+                    game_name = games[choice_num - 1]
+                    break
                 else:
-                    version = "unknown"
-                
-                print(f"  {i}. {game_name} (v{version})")
-                print(f"     位置: {game_dir}")
-                print()
+                    print(f"❌ 請輸入 0-{len(games)}")
+            except ValueError:
+                print("❌ 請輸入有效的數字")
+        
+        # 確認刪除
+        confirm = self.get_input(f"\n確定要刪除「{game_name}」嗎？(y/n)").strip().lower()
+        
+        if confirm == 'y':
+            import shutil
+            game_dir = os.path.join(player_dir, game_name)
+            try:
+                shutil.rmtree(game_dir)
+                print(f"\n✅ 已成功刪除「{game_name}」")
+            except Exception as e:
+                print(f"\n❌ 刪除失敗: {e}")
+        else:
+            print("\n已取消刪除")
         
         input("\n按 Enter 繼續...")
+    
+    def write_review(self):
+        """撰寫遊戲評論"""
+        print("\n✍️  撰寫遊戲評論")
+        
+        # 先檢查玩家已下載的遊戲
+        player_dir = os.path.join(self.downloads_dir, self.username)
+        
+        if not os.path.exists(player_dir):
+            print("❌ 你還沒有下載任何遊戲，無法撰寫評論")
+            input("\n按 Enter 繼續...")
+            return
+        
+        games = [d for d in os.listdir(player_dir) if os.path.isdir(os.path.join(player_dir, d))]
+        
+        if not games:
+            print("❌ 你還沒有下載任何遊戲，無法撰寫評論")
+            input("\n按 Enter 繼續...")
+            return
+        
+        # 顯示已下載的遊戲列表
+        print(f"\n你已下載的遊戲:")
+        for i, game_name in enumerate(games, 1):
+            print(f"  {i}. {game_name}")
+        print(f"  0. 取消")
+        
+        # 選擇遊戲（支援數字或名稱）
+        while True:
+            choice = self.get_input("\n請選擇要評論的遊戲 (輸入數字或名稱)")
+            
+            # 嘗試作為數字處理
+            try:
+                choice_num = int(choice)
+                if choice_num == 0:
+                    return
+                if 1 <= choice_num <= len(games):
+                    game_name = games[choice_num - 1]
+                    break
+                else:
+                    print(f"❌ 請輸入 0-{len(games)}")
+                    continue
+            except ValueError:
+                # 作為遊戲名稱處理
+                if choice in games:
+                    game_name = choice
+                    break
+                else:
+                    print(f"❌ 你尚未下載「{choice}」，請輸入正確的數字或遊戲名稱")
+                    continue
+        
+        # 輸入評分
+        while True:
+            rating_str = self.get_input("評分 (1-5)")
+            try:
+                rating = int(rating_str)
+                if 1 <= rating <= 5:
+                    break
+                else:
+                    print("❌ 評分必須在 1 到 5 之間")
+            except ValueError:
+                print("❌ 請輸入有效的數字")
+        
+        # 輸入評論內容
+        comment = self.get_input("評論內容 (可留空)", required=False)
+        
+        # 送出評論
+        response = self.send_request("submit_review", {
+            "game_name": game_name,
+            "rating": rating,
+            "comment": comment
+        })
+        
+        if response["status"] == "success":
+            print(f"\n✅ {response['message']}")
+        else:
+            print(f"\n❌ {response.get('message', '評論失敗')}")
+        
+        input("\n按 Enter 繼續...")
+    
+    def view_reviews(self, game_name):
+        """查看遊戲評論"""
+        response = self.send_request("get_reviews", {"game_name": game_name})
+        
+        if response["status"] == "success":
+            data = response["data"]
+            reviews = data.get("reviews", [])
+            avg_rating = data.get("average_rating", 0)
+            total_reviews = data.get("total_reviews", 0)
+            
+            print(f"\n{'='*60}")
+            print(f"  遊戲: {game_name}")
+            print(f"  平均評分: {avg_rating:.1f}/5.0 ({total_reviews} 則評論)")
+            
+            if reviews:
+                print(f"\n  評論列表:")
+                for review in reviews:
+                    print(f"\n  ⭐ {review['rating']}/5 - {review['player']}")
+                    if review.get('comment'):
+                        print(f"     {review['comment']}")
+                    if review.get('timestamp'):
+                        print(f"     時間: {review['timestamp']}")
+            else:
+                print("\n  目前還沒有評論")
+            
+            print(f"{'='*60}")
+        else:
+            print(f"❌ 取得評論失敗: {response.get('message', '')}")
     
     def list_rooms(self):
         """查看所有房間"""
@@ -451,13 +813,69 @@ class LobbyClient:
                     game_status = "✅" if room['game_name'] in downloaded_games else "❌ 未下載"
                     
                     print(f"  {i}. {status_icon} {room['room_id']}")
-                    print(f"     遊戲: {room['game_name']} {game_status}")
+                    print(f"     遊戲: {room['game_name']} (v{room.get('version', '?')}) {game_status}")
                     print(f"     房主: {room['host']}")
                     print(f"     玩家: {room['current_players']}/{room['max_players']}")
                     print(f"     狀態: {room['status']}")
                     print()
         else:
             print(f"❌ 取得房間列表失敗: {response.get('message', '')}")
+        
+        input("\n按 Enter 返回...")
+    
+    def list_online_players(self):
+        """查看線上玩家"""
+        print("\n👥 線上玩家")
+        print("⏳ 載入中...")
+        
+        response = self.send_request("list_online_players", {})
+        
+        if response["status"] == "success":
+            data = response["data"]
+            players = data["players"]
+            total = data["total_online"]
+            
+            self.clear_screen()
+            print("\n" + "=" * 60)
+            print(f"  👥 線上玩家 (共 {total} 人)")
+            print("=" * 60)
+            
+            if not players:
+                print("\n  目前沒有其他玩家在線上")
+            else:
+                # 分類顯示
+                playing = [p for p in players if p["status"] == "playing"]
+                in_room = [p for p in players if p["status"] == "in_room"]
+                idle = [p for p in players if p["status"] == "idle"]
+                
+                if playing:
+                    print(f"\n  🎮 遊戲中 ({len(playing)} 人)")
+                    print("  " + "-" * 40)
+                    for p in playing:
+                        host_icon = "👑" if p.get("is_host") else "  "
+                        print(f"    {host_icon} {p['username']}")
+                        print(f"       正在玩: {p.get('game_name', '?')} ({p.get('room_id', '?')})")
+                
+                if in_room:
+                    print(f"\n  🚪 在房間等待中 ({len(in_room)} 人)")
+                    print("  " + "-" * 40)
+                    for p in in_room:
+                        host_icon = "👑" if p.get("is_host") else "  "
+                        print(f"    {host_icon} {p['username']}")
+                        print(f"       房間: {p.get('room_id', '?')} ({p.get('game_name', '?')})")
+                
+                if idle:
+                    print(f"\n  💤 在大廳 ({len(idle)} 人)")
+                    print("  " + "-" * 40)
+                    for p in idle:
+                        me_indicator = " (你)" if p['username'] == self.username else ""
+                        print(f"       {p['username']}{me_indicator}")
+            
+            print("\n" + "=" * 60)
+            print("  👑 = 房主")
+            print("=" * 60)
+        else:
+            print(f"❌ 取得玩家列表失敗: {response.get('message', '')}")
         
         input("\n按 Enter 返回...")
     
@@ -554,13 +972,27 @@ class LobbyClient:
             input("\n按 Enter 繼續...")
             return
         
-        # 取得已下載的遊戲清單
+        # 取得已下載的遊戲清單及版本
         player_dir = os.path.join(self.downloads_dir, self.username)
         
         if not os.path.exists(player_dir):
-            downloaded_games = []
+            downloaded_games = {}
         else:
-            downloaded_games = [d for d in os.listdir(player_dir) if os.path.isdir(os.path.join(player_dir, d))]
+            downloaded_games = {}
+            for d in os.listdir(player_dir):
+                game_path = os.path.join(player_dir, d)
+                if os.path.isdir(game_path):
+                    # 讀取版本資訊
+                    version_file = os.path.join(game_path, ".version")
+                    if os.path.exists(version_file):
+                        try:
+                            with open(version_file, "r") as f:
+                                version = f.read().strip()
+                        except:
+                            version = "unknown"
+                    else:
+                        version = "unknown"
+                    downloaded_games[d] = version
         
         if not downloaded_games:
             print("❌ 你還沒有下載任何遊戲")
@@ -578,34 +1010,67 @@ class LobbyClient:
         
         rooms = response["data"]["rooms"]
         
-        # 過濾：只顯示已下載遊戲的房間，且不在遊戲中
-        available_rooms = []
+        # 過濾並分類房間
+        available_rooms = []      # 遊戲已下載且版本匹配
+        version_mismatch = []     # 遊戲已下載但版本不匹配
+        not_downloaded = []       # 遊戲未下載
+        
         for room in rooms:
-            if room["status"] != "playing" and room["game_name"] in downloaded_games:
-                available_rooms.append(room)
+            if room["status"] == "playing":
+                continue
+            
+            game_name = room["game_name"]
+            room_version = room.get("version", "unknown")
+            
+            if game_name in downloaded_games:
+                local_version = downloaded_games[game_name]
+                if local_version == room_version or local_version == "unknown" or room_version == "unknown":
+                    available_rooms.append(room)
+                else:
+                    room["local_version"] = local_version
+                    version_mismatch.append(room)
+            else:
+                not_downloaded.append(room)
         
         if not available_rooms:
             print("  目前沒有可加入的房間")
-            if rooms:
-                # 有房間但都不符合條件
-                other_rooms = [r for r in rooms if r["status"] != "playing"]
-                if other_rooms:
-                    print("\n  ⚠️  提示：有些房間需要你先下載對應的遊戲")
-                    print("  這些房間的遊戲你還沒下載:")
-                    for r in other_rooms:
-                        if r["game_name"] not in downloaded_games:
-                            print(f"    - {r['room_id']}: {r['game_name']}")
+            
+            # 顯示版本不匹配的房間
+            if version_mismatch:
+                print("\n  ⚠️  以下房間版本不匹配（需要更新遊戲）:")
+                for r in version_mismatch:
+                    print(f"    - {r['room_id']}: {r['game_name']}")
+                    print(f"      房間版本: {r.get('version', '?')} | 你的版本: {r['local_version']}")
+            
+            # 顯示未下載的房間
+            if not_downloaded:
+                print("\n  ⚠️  以下房間的遊戲你還沒下載:")
+                for r in not_downloaded:
+                    print(f"    - {r['room_id']}: {r['game_name']} (v{r.get('version', '?')})")
+            
             input("\n按 Enter 繼續...")
             return
         
-        # 顯示房間列表
+        # 顯示可加入的房間列表
         print(f"\n可加入的房間 (共 {len(available_rooms)} 個):\n")
         for i, room in enumerate(available_rooms, 1):
+            game_name = room['game_name']
+            room_version = room.get('version', 'unknown')
+            local_version = downloaded_games.get(game_name, 'unknown')
+            
             print(f"  {i}. {room['room_id']}")
-            print(f"     遊戲: {room['game_name']} ✅ 已下載")
+            print(f"     遊戲: {game_name} (v{room_version})")
+            if local_version == room_version:
+                print(f"     版本: ✅ 匹配")
+            else:
+                print(f"     版本: ✅ 已下載 (v{local_version})")
             print(f"     房主: {room['host']}")
             print(f"     玩家: {room['current_players']}/{room['max_players']}")
             print()
+        
+        # 提示版本不匹配的房間
+        if version_mismatch:
+            print(f"  ⚠️  另有 {len(version_mismatch)} 個房間版本不匹配")
         
         print("  0. 取消")
         
@@ -620,14 +1085,21 @@ class LobbyClient:
                 if choice_num == 0:
                     return
                 if 1 <= choice_num <= len(available_rooms):
-                    room_id = available_rooms[choice_num - 1]['room_id']
+                    selected_room = available_rooms[choice_num - 1]
+                    room_id = selected_room['room_id']
+                    game_name = selected_room['game_name']
+                    local_version = downloaded_games.get(game_name, "unknown")
                     break
                 else:
                     print(f"❌ 請輸入 0-{len(available_rooms)}")
             except ValueError:
                 print("❌ 請輸入數字")
         
-        response = self.send_request("join_room", {"room_id": room_id})
+        # 加入房間時傳送版本資訊
+        response = self.send_request("join_room", {
+            "room_id": room_id,
+            "version": local_version
+        })
         
         if response["status"] == "success":
             data = response["data"]
@@ -635,7 +1107,7 @@ class LobbyClient:
             
             print(f"✅ 加入房間成功！")
             print(f"   房間 ID: {data['room_id']}")
-            print(f"   遊戲: {data['game_name']}")
+            print(f"   遊戲: {data['game_name']} (v{data.get('version', '?')})")
             print(f"   玩家: {', '.join(data['players'])}")
         else:
             print(f"❌ 加入房間失敗: {response.get('message', '')}")
@@ -695,44 +1167,14 @@ class LobbyClient:
                 print(f"\n🎮 遊戲已啟動！")
                 print(f"   Game Server: {self.host}:{data['server_port']}")
                 
-                # 詢問是否加入遊戲
-                join = self.get_input("\n是否加入遊戲? (yes/no)", required=False) or "no"
-                
-                if join.lower() in ["yes", "y"]:
-                    # 啟動遊戲客戶端
-                    config = data.get("config", {})
-                    start_cmd = config.get("start_command", "")
+                # 只有非房主才顯示加入遊戲提示
+                if not data['is_host']:
+                    join = self.get_input("\n是否加入遊戲? (yes/no)", required=False) or "no"
                     
-                    if start_cmd:
-                        game_name = data['game_name']
-                        player_dir = os.path.join(self.downloads_dir, self.username)
-                        game_dir = os.path.join(player_dir, game_name)
-                        
-                        if os.path.exists(game_dir):
-                            server_host = self.host
-                            server_port = data['server_port']
-                            start_cmd = start_cmd.replace("{host}", server_host)
-                            start_cmd = start_cmd.replace("{port}", str(server_port))
-                            
-                            print(f"\n啟動命令: {start_cmd}")
-                            print(f"工作目錄: {game_dir}")
-                            
-                            try:
-                                import subprocess
-                                subprocess.Popen(
-                                    start_cmd,
-                                    shell=True,
-                                    cwd=game_dir
-                                )
-                                print("✅ 遊戲已啟動！")
-                                self.current_room = None  # 離開房間
-                            except Exception as e:
-                                print(f"❌ 啟動失敗: {e}")
-                        else:
-                            print(f"❌ 找不到遊戲檔案: {game_dir}")
-                            print(f"請先下載遊戲")
-                    else:
-                        print("⚠️  此遊戲沒有自動啟動命令")
+                    if join.lower() in ["yes", "y"]:
+                        self._launch_game_client(data)
+                else:
+                    print("\n💡 你是房主，可以選擇「重置房間」來重新開始遊戲")
             
             print("="*60)
         else:
@@ -746,54 +1188,80 @@ class LobbyClient:
                 print("   建議: 返回主選單並重新登入")
         
         input("\n按 Enter 繼續...")
+    
+    def reset_room(self):
+        """重置房間狀態（房主專用）"""
+        print("\n🔄 重置房間")
+        
+        confirm = self.get_input("確定要重置房間嗎？這會結束當前遊戲 (yes/no)", required=False) or "no"
+        if confirm.lower() not in ["yes", "y"]:
+            print("已取消")
+            input("\n按 Enter 繼續...")
+            return
+        
+        response = self.send_request("reset_room", {"room_id": self.current_room})
+        
+        if response["status"] == "success":
+            print("✅ 房間已重置，可以重新啟動遊戲")
+        else:
+            print(f"❌ 重置失敗: {response.get('message', '')}")
         
         input("\n按 Enter 繼續...")
     
-    def leave_room(self):
-        """離開房間"""
-        while self.current_room:  # 加入 while 迴圈
-            print(f"\n🚪 房間選單 - {self.current_room}")
+    def _launch_game_client(self, room_data):
+        """啟動遊戲客戶端（阻塞式）"""
+        config = room_data.get("config", {})
+        start_cmd = config.get("start_command", "")
+        
+        if not start_cmd:
+            print("⚠️  此遊戲沒有自動啟動命令")
+            input("\n按 Enter 繼續...")
+            return
+        
+        game_name = room_data['game_name']
+        player_dir = os.path.join(self.downloads_dir, self.username)
+        game_dir = os.path.join(player_dir, game_name)
+        
+        if not os.path.exists(game_dir):
+            print(f"❌ 找不到遊戲檔案: {game_dir}")
+            print(f"請先下載遊戲")
+            input("\n按 Enter 繼續...")
+            return
+        
+        server_host = self.host
+        server_port = room_data['server_port']
+        start_cmd = start_cmd.replace("{host}", server_host)
+        start_cmd = start_cmd.replace("{port}", str(server_port))
+        start_cmd = start_cmd.replace("{username}", self.username)
+        
+        print(f"\n啟動命令: {start_cmd}")
+        print(f"工作目錄: {game_dir}")
+        
+        try:
+            # 使用阻塞式執行
+            print("\n" + "="*50)
+            print("遊戲執行中，請在遊戲視窗操作...")
+            print("="*50 + "\n")
             
-            print("\n選項:")
-            print("  1. 查詢房間狀態")
-            print("  2. 啟動遊戲（房主專用）")
-            print("  3. 離開房間")
-            print("  0. 返回主選單")
+            import subprocess
+            result = subprocess.run(
+                start_cmd,
+                shell=True,
+                cwd=game_dir
+            )
             
-            choice = self.get_input("請選擇", required=False)
+            print("\n" + "="*50)
+            print("遊戲已結束")
+            print("="*50)
+            print(f"\n你仍在房間 {self.current_room} 中")
+            print("可以選擇：")
+            print("  - 等待房主再次啟動遊戲")
+            print("  - 離開房間")
             
-            if choice == "1":
-                self.check_room_status()
-            elif choice == "2":
-                self.start_game()
-            elif choice == "3":
-                response = self.send_request("leave_room", {"room_id": self.current_room})
-                
-                if response["status"] == "success":
-                    data = response.get("data", {})
-                    disbanded = data.get("disbanded", False)
-                    
-                    if disbanded:
-                        remaining_players = data.get("remaining_players", [])
-                        if remaining_players:
-                            print(f"⚠️  房間已解散（房主離開）")
-                            print(f"   剩餘玩家 ({len(remaining_players)} 人): {', '.join(remaining_players)}")
-                        else:
-                            print(f"✅ 房間已解散")
-                    else:
-                        print(f"✅ {response.get('message', '')}")
-                    
-                    self.current_room = None
-                else:
-                    print(f"❌ 離開房間失敗: {response.get('message', '')}")
-                
-                input("\n按 Enter 繼續...")
-                break
-            elif choice == "0":
-                break  # 返回主選單
-            else:
-                print("❌ 無效的選項")
-                input("\n按 Enter 繼續...")
+        except Exception as e:
+            print(f"❌ 啟動失敗: {e}")
+        
+        input("\n按 Enter 繼續...")
     
     def start_game(self):
         """啟動遊戲"""
@@ -833,6 +1301,9 @@ class LobbyClient:
                         start_cmd = start_cmd.replace("{host}", server_host)
                         start_cmd = start_cmd.replace("{port}", str(server_port))
                     
+                    # 加入玩家名稱
+                    start_cmd = start_cmd.replace("{username}", self.username)
+                    
                     print(f"\n啟動命令: {start_cmd}")
                     print(f"工作目錄: {game_dir}")
                     
@@ -841,15 +1312,28 @@ class LobbyClient:
                     
                     if auto.lower() in ["yes", "y"]:
                         try:
-                            # 在遊戲目錄下執行啟動命令
-                            subprocess.Popen(
+                            # 在遊戲目錄下執行啟動命令（阻塞式）
+                            print("\n" + "="*50)
+                            print("遊戲執行中，請在遊戲視窗操作...")
+                            print("="*50 + "\n")
+                            
+                            # 使用 subprocess.run 阻塞直到遊戲結束
+                            result = subprocess.run(
                                 start_cmd,
                                 shell=True,
                                 cwd=game_dir
                             )
-                            print("✅ 遊戲已啟動！")
-                            # 只在真正啟動遊戲後才清空房間
-                            self.current_room = None
+                            
+                            print("\n" + "="*50)
+                            print("遊戲已結束")
+                            print("="*50)
+                            
+                            # 遊戲結束後保持在房間內
+                            print(f"\n👑 你是房主，仍在房間 {self.current_room} 中")
+                            print("\n可以選擇：")
+                            print("  1. 再次啟動遊戲（選項 2）")
+                            print("  2. 離開房間解散（選項 3）")
+                            print("  3. 返回主選單等待（選項 0）")
                         except Exception as e:
                             print(f"❌ 啟動失敗: {e}")
                             print(f"\n請手動執行:")
@@ -860,8 +1344,7 @@ class LobbyClient:
                         print(f"\n請手動執行:")
                         print(f"  cd {game_dir}")
                         print(f"  {start_cmd}")
-                        # 用戶選擇手動啟動，也清空房間（假設他們會去手動執行）
-                        self.current_room = None
+                        # 用戶選擇手動啟動，保留在房間內
                 else:
                     print(f"\n❌ 找不到遊戲檔案: {game_dir}")
                     print(f"請先下載遊戲")
