@@ -606,8 +606,18 @@ class DeveloperClient:
             except ValueError:
                 print("❌ 請輸入數字")
         
+        # 顯示下架影響
+        print(f"\n⚠️  下架影響:")
+        print(f"  • 遊戲將從商城完全移除")
+        print(f"  • 玩家無法再下載此遊戲")
+        print(f"  • 無法建立新的遊戲房間")
+        print(f"  • 該遊戲的所有房間將被立即刪除")
+        print(f"  • 正在遊玩的玩家會被強制結束遊戲")
+        print(f"  • 所有遊戲檔案將被永久刪除")
+        print(f"  • 此操作無法復原！")
+        
         # 確認
-        confirm = self.get_input(f"確定要下架 '{game_name}' 嗎? (yes/no)", required=False) or "no"
+        confirm = self.get_input(f"\n確定要永久下架 '{game_name}' 嗎? (yes/no)", required=False) or "no"
         
         if confirm.lower() not in ["yes", "y"]:
             print("❌ 已取消")
@@ -619,7 +629,23 @@ class DeveloperClient:
         })
         
         if response["status"] == "success":
-            print(f"✅ 下架成功！")
+            print(f"\n✅ 下架成功！")
+            
+            # 顯示詳細結果
+            data = response.get("data", {})
+            removed_rooms = data.get("removed_rooms", [])
+            
+            if removed_rooms:
+                print(f"\n📊 刪除了 {len(removed_rooms)} 個房間:")
+                for room_info in removed_rooms:
+                    room_id = room_info.get("room_id")
+                    players = room_info.get("players", [])
+                    status = room_info.get("status", "unknown")
+                    print(f"  • 房間 {room_id} (狀態: {status}, 玩家: {len(players)} 人)")
+                    if players:
+                        print(f"    玩家: {', '.join(players)}")
+            else:
+                print(f"  沒有需要刪除的房間")
         else:
             print(f"❌ 下架失敗: {response.get('message', '')}")
         
@@ -664,6 +690,7 @@ def main():
     
     client = DeveloperClient(host, port)
     client.run()
+
 
 if __name__ == "__main__":
     main()
