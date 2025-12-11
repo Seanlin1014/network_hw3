@@ -1242,7 +1242,7 @@ class LobbyClient:
                 local_versions[game_name] = "unknown"
 
         # 取得伺服器上的遊戲列表（含最新版本）
-        response = self.send_request("list_games")
+        response = self.send_request("list_games", {})
 
         if response["status"] != "success":
             print(f"❌ 無法取得遊戲列表: {response.get('message', '')}")
