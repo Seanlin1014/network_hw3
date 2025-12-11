@@ -39,3 +39,4 @@ Thumbs.db
 # Project specific
 .lobby_port
 .developer_port
+player/downloads/

@@ -1301,10 +1301,10 @@ class LobbyClient:
                 print(f"     你的版本: v{local_ver} → 最新版本: v{server_ver}")
                 print(f"     請先到「遊戲商城 → 瀏覽/下載遊戲」更新")
 
-        # 已刪除的遊戲不顯示在列表中，僅在有此情況時提示
+        # 已刪除的遊戲不顯示在列表中
         if deleted_games:
-            print(f"\n💡 提示: {len(deleted_games)} 款本地遊戲已從伺服器移除")
-            print(f"   (這些遊戲不會顯示在可用列表中)")
+            for game_name, local_ver in deleted_games:
+                print(f"\n❌ {game_name} - 遊戲不存在")
 
         if not up_to_date_games:
             print("\n❌ 你沒有版本最新的遊戲，無法建立房間")
@@ -1699,34 +1699,15 @@ class LobbyClient:
         print("遊戲啟動中...")
         print("="*50 + "\n")
         sys.stdout.flush()
-        
+
         try:
-            # 使用 Popen 以便更好地控制進程
-            process = subprocess.Popen(
+            # 直接執行遊戲，讓它使用當前終端的 stdin/stdout/stderr
+            # 這樣互動式遊戲才能正常工作
+            result = subprocess.run(
                 start_cmd,
                 shell=True,
-                cwd=game_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
+                cwd=game_dir
             )
-            
-            # 即時輸出遊戲的訊息
-            while True:
-                output = process.stdout.readline()
-                if output:
-                    print(output, end='')
-                    sys.stdout.flush()
-                
-                # 檢查進程是否結束
-                ret = process.poll()
-                if ret is not None:
-                    # 讀取剩餘輸出
-                    remaining = process.stdout.read()
-                    if remaining:
-                        print(remaining, end='')
-                    break
             
             print("\n" + "="*50)
             print("🎮 遊戲已結束")
@@ -1745,10 +1726,10 @@ class LobbyClient:
             
         except KeyboardInterrupt:
             print("\n\n⚠️ 遊戲被中斷")
-            if 'process' in locals():
-                process.terminate()
         except Exception as e:
             print(f"\n❌ 啟動失敗: {e}")
+            print(f"   命令: {start_cmd}")
+            print(f"   目錄: {game_dir}")
         
         input("\n按 Enter 返回選單...")
     
