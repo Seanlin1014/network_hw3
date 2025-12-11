@@ -1109,39 +1109,54 @@ class LobbyClient:
     def list_rooms(self):
         """查看所有房間"""
         print("\n🏠 房間列表")
-        
+
         # 取得已下載的遊戲清單
         player_dir = os.path.join(self.downloads_dir, self.username)
-        
+
         if os.path.exists(player_dir):
             downloaded_games = [d for d in os.listdir(player_dir) if os.path.isdir(os.path.join(player_dir, d))]
         else:
             downloaded_games = []
-        
+
+        # 取得伺服器上存在的遊戲列表
+        games_response = self.send_request("list_games", {})
+        available_games = set()
+        if games_response.get("status") == "success":
+            available_games = {g['game_name'] for g in games_response["data"]["games"]}
+
         response = self.send_request("list_rooms", {})
-        
+
         if response["status"] == "success":
-            rooms = response["data"]["rooms"]
-            
+            all_rooms = response["data"]["rooms"]
+
+            # 過濾掉使用不存在遊戲的房間
+            rooms = [r for r in all_rooms if r['game_name'] in available_games]
+            hidden_count = len(all_rooms) - len(rooms)
+
             if not rooms:
                 print("  目前沒有任何房間")
+                if hidden_count > 0:
+                    print(f"\n  💡 提示: {hidden_count} 個房間因使用已移除的遊戲而不顯示")
             else:
                 print(f"\n  共 {len(rooms)} 個房間:\n")
                 for i, room in enumerate(rooms, 1):
                     status_icon = "🎮" if room["status"] == "playing" else "⏳"
-                    
+
                     # 檢查是否已下載遊戲
                     game_status = "✅" if room['game_name'] in downloaded_games else "❌ 未下載"
-                    
+
                     print(f"  {i}. {status_icon} {room['room_id']}")
                     print(f"     遊戲: {room['game_name']} (v{room.get('version', '?')}) {game_status}")
                     print(f"     房主: {room['host']}")
                     print(f"     玩家: {room['current_players']}/{room['max_players']}")
                     print(f"     狀態: {room['status']}")
                     print()
+
+                if hidden_count > 0:
+                    print(f"  💡 提示: {hidden_count} 個房間因使用已移除的遊戲而不顯示\n")
         else:
             print(f"❌ 取得房間列表失敗: {response.get('message', '')}")
-        
+
         input("\n按 Enter 返回...")
     
     def list_online_players(self):
@@ -1251,13 +1266,20 @@ class LobbyClient:
 
         server_games = {g['game_name']: g['version'] for g in response["data"]["games"]}
 
-        # 分類遊戲：版本一致 vs 需要更新
+        # 分類遊戲：版本一致 vs 需要更新 vs 已刪除
         up_to_date_games = []
         outdated_games = []
+        deleted_games = []
 
         for game_name in games:
             local_ver = local_versions.get(game_name, "unknown")
-            server_ver = server_games.get(game_name, "unknown")
+
+            # 檢查遊戲是否仍存在於伺服器上
+            if game_name not in server_games:
+                deleted_games.append((game_name, local_ver))
+                continue
+
+            server_ver = server_games[game_name]
 
             if local_ver == server_ver:
                 up_to_date_games.append((game_name, local_ver))
@@ -1278,6 +1300,11 @@ class LobbyClient:
                 print(f"  ❌ {game_name}")
                 print(f"     你的版本: v{local_ver} → 最新版本: v{server_ver}")
                 print(f"     請先到「遊戲商城 → 瀏覽/下載遊戲」更新")
+
+        # 已刪除的遊戲不顯示在列表中，僅在有此情況時提示
+        if deleted_games:
+            print(f"\n💡 提示: {len(deleted_games)} 款本地遊戲已從伺服器移除")
+            print(f"   (這些遊戲不會顯示在可用列表中)")
 
         if not up_to_date_games:
             print("\n❌ 你沒有版本最新的遊戲，無法建立房間")
@@ -1367,28 +1394,38 @@ class LobbyClient:
             input("\n按 Enter 繼續...")
             return
         
+        # 取得伺服器上存在的遊戲列表
+        games_response = self.send_request("list_games", {})
+        available_games = set()
+        if games_response.get("status") == "success":
+            available_games = {g['game_name'] for g in games_response["data"]["games"]}
+
         # 取得房間列表
         response = self.send_request("list_rooms", {})
-        
+
         if response["status"] != "success":
             print(f"❌ 無法取得房間列表: {response.get('message', '')}")
             input("\n按 Enter 繼續...")
             return
-        
-        rooms = response["data"]["rooms"]
-        
+
+        all_rooms = response["data"]["rooms"]
+
+        # 過濾掉使用不存在遊戲的房間
+        rooms = [r for r in all_rooms if r['game_name'] in available_games]
+        deleted_game_count = len(all_rooms) - len(rooms)
+
         # 過濾並分類房間
         available_rooms = []      # 遊戲已下載且版本匹配
         version_mismatch = []     # 遊戲已下載但版本不匹配
         not_downloaded = []       # 遊戲未下載
-        
+
         for room in rooms:
             if room["status"] == "playing":
                 continue
-            
+
             game_name = room["game_name"]
             room_version = room.get("version", "unknown")
-            
+
             if game_name in downloaded_games:
                 local_version = downloaded_games[game_name]
                 if local_version == room_version or local_version == "unknown" or room_version == "unknown":
@@ -1401,20 +1438,24 @@ class LobbyClient:
         
         if not available_rooms:
             print("  目前沒有可加入的房間")
-            
+
             # 顯示版本不匹配的房間
             if version_mismatch:
                 print("\n  ⚠️  以下房間版本不匹配（需要更新遊戲）:")
                 for r in version_mismatch:
                     print(f"    - {r['room_id']}: {r['game_name']}")
                     print(f"      房間版本: {r.get('version', '?')} | 你的版本: {r['local_version']}")
-            
+
             # 顯示未下載的房間
             if not_downloaded:
                 print("\n  ⚠️  以下房間的遊戲你還沒下載:")
                 for r in not_downloaded:
                     print(f"    - {r['room_id']}: {r['game_name']} (v{r.get('version', '?')})")
-            
+
+            # 提示被隱藏的房間
+            if deleted_game_count > 0:
+                print(f"\n  💡 提示: {deleted_game_count} 個房間因使用已移除的遊戲而不顯示")
+
             input("\n按 Enter 繼續...")
             return
         
@@ -1438,7 +1479,11 @@ class LobbyClient:
         # 提示版本不匹配的房間
         if version_mismatch:
             print(f"  ⚠️  另有 {len(version_mismatch)} 個房間版本不匹配")
-        
+
+        # 提示被隱藏的房間
+        if deleted_game_count > 0:
+            print(f"  💡 提示: {deleted_game_count} 個房間因使用已移除的遊戲而不顯示")
+
         print("  0. 取消")
         
         # 選擇房間
