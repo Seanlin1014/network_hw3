@@ -378,28 +378,37 @@ def generate_room_id():
 def handle_create_room(data, player_name):
     """建立遊戲房間"""
     game_name = data.get("game_name")
-    
+    player_version = data.get("version")  # 玩家的遊戲版本
+
     if not game_name:
         return {"status": "error", "message": "Missing game_name"}
-    
+
     with games_lock:
         games_metadata = load_json_file(GAME_METADATA_FILE, {})
-        
+
         if game_name not in games_metadata:
             return {"status": "error", "message": "Game not found"}
-        
+
         game_info = games_metadata[game_name]
-        
+
         if game_info["status"] != "active":
             return {"status": "error", "message": "Game is not available"}
-    
+
+        # 驗證版本
+        server_version = game_info.get("version", "1.0.0")
+        if player_version and player_version != server_version:
+            return {
+                "status": "error",
+                "message": f"版本不匹配！你的版本: {player_version}，最新版本: {server_version}。請先更新遊戲。"
+            }
+
     with rooms_lock:
         room_id = generate_room_id()
-        
+
         rooms[room_id] = {
             "room_id": room_id,
             "game_name": game_name,
-            "version": game_info.get("version", "1.0.0"),
+            "version": server_version,  # 使用伺服器驗證後的版本
             "host": player_name,
             "players": [player_name],
             "ready_players": [],  # 準備就緒的玩家列表
@@ -408,13 +417,14 @@ def handle_create_room(data, player_name):
             "created_at": time.time(),
             "game_server_port": None
         }
-        
+
         return {
             "status": "success",
             "message": "Room created",
             "data": {
                 "room_id": room_id,
                 "game_name": game_name,
+                "version": server_version,  # 回傳版本資訊
                 "max_players": game_info["max_players"]
             }
         }

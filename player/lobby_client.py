@@ -1203,7 +1203,7 @@ class LobbyClient:
     def create_room(self):
         """建立房間"""
         print("\n🏗️  建立房間")
-        
+
         # 檢查是否已在房間
         if self.current_room:
             print("❌ 你已經在房間內了！")
@@ -1211,74 +1211,120 @@ class LobbyClient:
             print("   請先離開房間（選項 9）才能建立新房間")
             input("\n按 Enter 繼續...")
             return
-        
-        # 取得已下載的遊戲
+
+        # 取得已下載的遊戲及版本
         player_dir = os.path.join(self.downloads_dir, self.username)
-        
+
         if not os.path.exists(player_dir):
             print("❌ 你還沒有下載任何遊戲")
             print("請先下載遊戲（選項 3）")
             input("\n按 Enter 繼續...")
             return
-        
+
         games = [d for d in os.listdir(player_dir) if os.path.isdir(os.path.join(player_dir, d))]
-        
+
         if not games:
             print("❌ 你還沒有下載任何遊戲")
             print("請先下載遊戲（選項 3）")
             input("\n按 Enter 繼續...")
             return
-        
-        # 顯示遊戲列表
-        print(f"\n你的遊戲 (共 {len(games)} 款):\n")
-        for i, game_name in enumerate(games, 1):
+
+        # 獲取本地遊戲版本
+        local_versions = {}
+        for game_name in games:
             game_dir = os.path.join(player_dir, game_name)
             version_file = os.path.join(game_dir, ".version")
-            
+
             if os.path.exists(version_file):
                 with open(version_file) as f:
-                    version = f.read().strip()
+                    local_versions[game_name] = f.read().strip()
             else:
-                version = "unknown"
-            
-            print(f"  {i}. {game_name} (v{version})")
-        
+                local_versions[game_name] = "unknown"
+
+        # 取得伺服器上的遊戲列表（含最新版本）
+        response = self.send_request("list_games")
+
+        if response["status"] != "success":
+            print(f"❌ 無法取得遊戲列表: {response.get('message', '')}")
+            input("\n按 Enter 繼續...")
+            return
+
+        server_games = {g['game_name']: g['version'] for g in response["data"]["games"]}
+
+        # 分類遊戲：版本一致 vs 需要更新
+        up_to_date_games = []
+        outdated_games = []
+
+        for game_name in games:
+            local_ver = local_versions.get(game_name, "unknown")
+            server_ver = server_games.get(game_name, "unknown")
+
+            if local_ver == server_ver:
+                up_to_date_games.append((game_name, local_ver))
+            else:
+                outdated_games.append((game_name, local_ver, server_ver))
+
+        # 顯示遊戲列表
+        print(f"\n✅ 可建立房間的遊戲 (版本最新):\n")
+        if up_to_date_games:
+            for i, (game_name, version) in enumerate(up_to_date_games, 1):
+                print(f"  {i}. {game_name} (v{version})")
+        else:
+            print("  (無)")
+
+        if outdated_games:
+            print(f"\n⚠️  需要更新的遊戲 (無法建立房間):\n")
+            for game_name, local_ver, server_ver in outdated_games:
+                print(f"  ❌ {game_name}")
+                print(f"     你的版本: v{local_ver} → 最新版本: v{server_ver}")
+                print(f"     請先到「遊戲商城 → 瀏覽/下載遊戲」更新")
+
+        if not up_to_date_games:
+            print("\n❌ 你沒有版本最新的遊戲，無法建立房間")
+            print("請先更新遊戲到最新版本")
+            input("\n按 Enter 繼續...")
+            return
+
         print("  0. 取消")
-        
+
         # 選擇遊戲
         while True:
-            choice = self.get_input(f"請選擇 (0-{len(games)})", required=False)
+            choice = self.get_input(f"請選擇 (0-{len(up_to_date_games)})", required=False)
             if not choice:
                 continue
-            
+
             try:
                 choice_num = int(choice)
                 if choice_num == 0:
                     return
-                if 1 <= choice_num <= len(games):
-                    game_name = games[choice_num - 1]
+                if 1 <= choice_num <= len(up_to_date_games):
+                    game_name, local_version = up_to_date_games[choice_num - 1]
                     break
                 else:
-                    print(f"❌ 請輸入 0-{len(games)}")
+                    print(f"❌ 請輸入 0-{len(up_to_date_games)}")
             except ValueError:
                 print("❌ 請輸入數字")
-        
-        response = self.send_request("create_room", {"game_name": game_name})
-        
+
+        # 建立房間時傳送版本資訊
+        response = self.send_request("create_room", {
+            "game_name": game_name,
+            "version": local_version
+        })
+
         if response["status"] == "success":
             data = response["data"]
             self.current_room = data["room_id"]
-            
+
             print(f"✅ 房間建立成功！")
             print(f"   房間 ID: {data['room_id']}")
-            print(f"   遊戲: {data['game_name']}")
+            print(f"   遊戲: {data['game_name']} (v{data.get('version', '?')})")
             print(f"   最多玩家: {data['max_players']}")
             print(f"\n你可以:")
             print(f"  - 等待其他玩家加入")
             print(f"  - 當人數足夠時，在主選單選擇「離開房間」來啟動遊戲")
         else:
             print(f"❌ 建立房間失敗: {response.get('message', '')}")
-        
+
         input("\n按 Enter 繼續...")
     
     def join_room(self):
