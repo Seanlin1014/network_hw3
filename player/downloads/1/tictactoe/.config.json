@@ -1,4 +1,4 @@
 {
-  "start_command": "python3 game.py {host} {port}",
+  "start_command": "python3 {host} {port}",
   "server_command": "python3 game_server.py {port}"
 }
