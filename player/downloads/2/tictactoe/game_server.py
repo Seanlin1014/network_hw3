@@ -309,18 +309,28 @@ class TicTacToeServer:
 
 def main():
     """主程式"""
-    if len(sys.argv) != 2:
-        print("Usage: python3 server_game.py <port>")
+    if len(sys.argv) < 2:
+        print("Usage: python3 server_game.py <port> [--players N]")
         sys.exit(1)
-    
+
     try:
         port = int(sys.argv[1])
     except ValueError:
         print("Error: Port must be a number")
         sys.exit(1)
-    
+
+    # 解析 --players 參數（雖然井字遊戲固定為2人，但為了與系統相容）
+    expected_players = 2  # 井字遊戲固定為 2 人
+    for i, arg in enumerate(sys.argv):
+        if arg == "--players" and i + 1 < len(sys.argv):
+            try:
+                expected_players = int(sys.argv[i + 1])
+            except ValueError:
+                pass
+
+    print(f"[TicTacToe Server] Starting (expects {expected_players} players)")
     server = TicTacToeServer(port)
-    
+
     try:
         server.start()
     except KeyboardInterrupt:
