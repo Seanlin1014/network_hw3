@@ -61,41 +61,45 @@ def main():
     print("\n" + "="*60)
     print("自動上架所有遊戲測試")
     print("="*60)
-    
+
+    # 取得腳本所在目錄
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    server_dir = script_dir
+
     # 讀取 ports
     try:
-        with open(".db_port") as f:
+        with open(os.path.join(server_dir, ".db_port")) as f:
             db_port = int(f.read().strip())
-        with open(".dev_port") as f:
+        with open(os.path.join(server_dir, ".dev_port")) as f:
             dev_port = int(f.read().strip())
     except FileNotFoundError:
         print("\n❌ 找不到 port 檔案，請先啟動 Server")
         print("執行: ./start_game_store.sh")
         return
-    
+
     host = "localhost"
-    
+
     print(f"\n連線資訊:")
     print(f"  Host: {host}")
     print(f"  DB Port: {db_port}")
     print(f"  Dev Port: {dev_port}")
-    
+
     # 步驟 1: 建立/登入開發者帳號
     print("\n步驟 1: 建立開發者帳號...")
-    
+
     db_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     db_sock.connect((host, db_port))
-    
+
     request = {
         "collection": "Developer",
         "action": "create",
         "data": {"name": "game_dev", "password": "test123"}
     }
-    
+
     send_frame(db_sock, json.dumps(request).encode('utf-8'))
     response = json.loads(recv_frame(db_sock).decode('utf-8'))
     db_sock.close()
-    
+
     if response["status"] == "success":
         print("  ✅ 開發者帳號建立成功")
     elif "already exists" in response.get("message", ""):
@@ -103,55 +107,60 @@ def main():
     else:
         print(f"  ❌ 建立帳號失敗: {response.get('message')}")
         return
-    
+
     # 步驟 2: 登入
     print("\n步驟 2: 登入 Developer Server...")
-    
+
     dev_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     dev_sock.connect((host, dev_port))
-    
+
     request = {
         "action": "login",
         "data": {"username": "game_dev", "password": "test123"}
     }
-    
+
     send_frame(dev_sock, json.dumps(request).encode('utf-8'))
     response = json.loads(recv_frame(dev_sock).decode('utf-8'))
-    
+
     if response["status"] != "success":
         print(f"  ❌ 登入失敗: {response.get('message')}")
         dev_sock.close()
         return
-    
+
     print("  ✅ 登入成功")
-    
+
     # 步驟 3: 上架遊戲
     games = []
-    
+
+    # 遊戲目錄位於 developer/games/ 下
+    games_source_dir = os.path.join(os.path.dirname(server_dir), "developer", "games")
+
     # 遊戲 1: Tic-Tac-Toe (CLI)
-    if os.path.exists("tictactoe_game"):
+    tictactoe_dir = os.path.join(games_source_dir, "tictactoe_game")
+    if os.path.exists(tictactoe_dir):
         games.append({
             'name': 'Tic-Tac-Toe Online',
             'type': 'CLI',
             'description': '經典圈圈叉叉雙人對戰！考驗你的策略思維，在 3x3 棋盤上與對手較量。',
             'max_players': 2,
             'version': '1.0.0',
-            'dir': 'tictactoe_game',
+            'dir': tictactoe_dir,
             'config': {
                 'start_command': 'python3 game.py {host} {port}',
                 'server_command': 'python3 game_server.py {port}'
             }
         })
-    
+
     # 遊戲 2: Tetris Battle (GUI)
-    if os.path.exists("tetris_game"):
+    tetris_dir = os.path.join(games_source_dir, "tetris_game")
+    if os.path.exists(tetris_dir):
         games.append({
             'name': 'Tetris Battle',
             'type': 'GUI',
             'description': '雙人即時對戰俄羅斯方塊！挑戰你的反應與策略，消除方塊擊敗對手！',
             'max_players': 2,
             'version': '1.0.0',
-            'dir': 'tetris_game',
+            'dir': tetris_dir,
             'config': {
                 'start_command': 'python3 game.py {host} {port}',
                 'server_command': 'python3 server_game.py {port}'
