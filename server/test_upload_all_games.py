@@ -138,9 +138,8 @@ def main():
             'version': '1.0.0',
             'dir': 'tictactoe_game',
             'config': {
-                'start_command': './playerA {host} {port}',
-                'server_command': './lobby_server {port}',
-                'compile': 'make'
+                'start_command': 'python3 game.py {host} {port}',
+                'server_command': 'python3 game_server.py {port}'
             }
         })
     
