@@ -1277,7 +1277,11 @@ class LobbyClient:
             for game_name, local_ver, server_ver in outdated_games:
                 print(f"  ❌ {game_name}")
                 print(f"     你的版本: v{local_ver} → 最新版本: v{server_ver}")
-                print(f"     請先到「遊戲商城 → 瀏覽/下載遊戲」更新")
+                # 檢查遊戲是否已下架
+                if server_ver in ["vunknown", "unknown"]:
+                    print(f"     此遊戲已下架")
+                else:
+                    print(f"     請先到「遊戲商城 → 瀏覽/下載遊戲」更新")
 
         if not up_to_date_games:
             print("\n❌ 你沒有版本最新的遊戲，無法建立房間")
@@ -1408,12 +1412,20 @@ class LobbyClient:
                 for r in version_mismatch:
                     print(f"    - {r['room_id']}: {r['game_name']}")
                     print(f"      房間版本: {r.get('version', '?')} | 你的版本: {r['local_version']}")
+                    # 檢查遊戲是否已下架
+                    if r.get('version') in ["vunknown", "unknown"]:
+                        print(f"      此遊戲已下架")
             
             # 顯示未下載的房間
             if not_downloaded:
                 print("\n  ⚠️  以下房間的遊戲你還沒下載:")
                 for r in not_downloaded:
-                    print(f"    - {r['room_id']}: {r['game_name']} (v{r.get('version', '?')})")
+                    room_ver = r.get('version', '?')
+                    # 檢查遊戲是否已下架
+                    if room_ver in ["vunknown", "unknown"]:
+                        print(f"    - {r['room_id']}: {r['game_name']} (v{room_ver}) - 此遊戲已下架")
+                    else:
+                        print(f"    - {r['room_id']}: {r['game_name']} (v{room_ver})")
             
             input("\n按 Enter 繼續...")
             return
