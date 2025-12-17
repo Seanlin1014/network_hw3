@@ -409,6 +409,14 @@ class LobbyClient:
                             polling_active = False  # 停止輪詢
                             self._launch_game_client(room_data, auto_start=True)
                             polling_active = True  # 恢復輪詢
+                            
+                            # ⭐ 遊戲結束後立即刷新房間狀態
+                            response = self.send_request("get_room_status", {"room_id": self.current_room})
+                            if response and response.get("status") == "success":
+                                with room_data_lock:
+                                    current_room_data["data"] = response["data"]
+                                    current_room_data["changed"] = True
+                            
                             need_redraw = True  # 遊戲結束後重繪
                             continue
                         else:
@@ -1785,16 +1793,26 @@ class LobbyClient:
             print("🎮 遊戲已結束")
             print("="*50)
             
-            # 刷新房間狀態（觸發自動重置）
+            # ⭐ 等待並刷新房間狀態（給監控線程時間重置）
             if self.current_room:
-                response = self.send_request("get_room_status", {"room_id": self.current_room})
-                if response.get("status") == "success":
-                    room_status = response["data"].get("status", "unknown")
-                    if room_status == "waiting":
-                        print(f"\n✅ 房間已自動重置為等待狀態")
-                        print(f"   房主可以重新啟動遊戲")
+                print("\n⏳ 等待房間重置...")
+                max_retries = 5
+                for i in range(max_retries):
+                    time.sleep(1)  # 每次等待 1 秒
+                    response = self.send_request("get_room_status", {"room_id": self.current_room})
+                    if response.get("status") == "success":
+                        room_status = response["data"].get("status", "unknown")
+                        if room_status == "waiting":
+                            print(f"✅ 房間已自動重置為等待狀態")
+                            print(f"   房主可以重新啟動遊戲")
+                            break
+                        else:
+                            print(f"   [{i+1}/{max_retries}] 房間狀態: {room_status}")
                     else:
-                        print(f"\n房間狀態: {room_status}")
+                        print(f"   [{i+1}/{max_retries}] 無法取得房間狀態")
+                else:
+                    # 超時仍未重置
+                    print(f"⚠️  房間狀態尚未更新，可能需要稍等")
             
         except KeyboardInterrupt:
             print("\n\n⚠️  遊戲被中斷 (Ctrl+C)")
@@ -1806,20 +1824,24 @@ class LobbyClient:
                 except:
                     process.kill()
             
-            # 刷新房間狀態（觸發自動重置）
+            # ⭐ 等待並刷新房間狀態（給監控線程時間重置）
             if self.current_room:
-                try:
-                    response = self.send_request("get_room_status", {"room_id": self.current_room})
-                    if response.get("status") == "success":
-                        room_status = response["data"].get("status", "unknown")
-                        if room_status == "waiting":
-                            print(f"\n✅ 房間已自動重置為等待狀態")
-                        else:
-                            print(f"\n房間狀態: {room_status}")
-                except:
-                    pass
+                print("\n⏳ 等待房間重置...")
+                max_retries = 3
+                for i in range(max_retries):
+                    time.sleep(1)
+                    try:
+                        response = self.send_request("get_room_status", {"room_id": self.current_room})
+                        if response.get("status") == "success":
+                            room_status = response["data"].get("status", "unknown")
+                            if room_status == "waiting":
+                                print(f"✅ 房間已重置為等待狀態")
+                                break
+                            else:
+                                print(f"   [{i+1}/{max_retries}] 房間狀態: {room_status}")
+                    except:
+                        pass
             
-            # ⭐ 不要用 input() 等待，直接返回
             print("\n返回選單...")
             return
             
