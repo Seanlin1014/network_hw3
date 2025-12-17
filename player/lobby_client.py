@@ -308,14 +308,19 @@ class LobbyClient:
         last_room_data = None
         need_redraw = True
         room_data_lock = threading.Lock()
-        current_room_data = {"data": None, "changed": False}
-        polling_active = True
+        
+        # ⭐ 使用字典避免 nonlocal 作用域問題
+        shared_state = {
+            "current_room_data": {"data": None, "changed": False},
+            "polling_active": True,   # 控制是否輪詢（暫停/恢復）
+            "thread_running": True    # 控制線程生命週期（存活/死亡）
+        }
         
         # ⭐ 先獲取一次初始狀態
         initial_response = self.send_request("get_room_status", {"room_id": self.current_room})
         if initial_response and initial_response.get("status") == "success":
-            current_room_data["data"] = initial_response["data"]
-            current_room_data["changed"] = True
+            shared_state["current_room_data"]["data"] = initial_response["data"]
+            shared_state["current_room_data"]["changed"] = True
         elif initial_response and initial_response.get("status") == "error":
             if "not found" in initial_response.get("message", "").lower():
                 print("\n⚠️  房間不存在")
@@ -325,25 +330,25 @@ class LobbyClient:
         
         def poll_room_status():
             """後台輪詢房間狀態"""
-            nonlocal current_room_data, polling_active
-            while polling_active and self.current_room:
-                try:
-                    response = self.send_request("get_room_status", {"room_id": self.current_room})
-                    if response and response.get("status") == "success":
-                        with room_data_lock:
-                            new_data = response["data"]
-                            # 檢查是否有變化
-                            if new_data != current_room_data["data"]:
-                                current_room_data["data"] = new_data
-                                current_room_data["changed"] = True
-                    elif response and response.get("status") == "error":
-                        if "not found" in response.get("message", "").lower():
+            while shared_state["thread_running"] and self.current_room:
+                if shared_state["polling_active"]:
+                    try:
+                        response = self.send_request("get_room_status", {"room_id": self.current_room})
+                        if response and response.get("status") == "success":
                             with room_data_lock:
-                                current_room_data["data"] = None
-                                current_room_data["changed"] = True
-                    time.sleep(2)  # 每 2 秒輪詢一次
-                except:
-                    pass
+                                new_data = response["data"]
+                                if new_data != shared_state["current_room_data"]["data"]:
+                                    shared_state["current_room_data"]["data"] = new_data
+                                    shared_state["current_room_data"]["changed"] = True
+                        elif response and response.get("status") == "error":
+                            if "not found" in response.get("message", "").lower():
+                                with room_data_lock:
+                                    shared_state["current_room_data"]["data"] = None
+                                    shared_state["current_room_data"]["changed"] = True
+                    except:
+                        pass
+                
+                time.sleep(0.5)
         
         # 啟動後台輪詢線程
         poll_thread = threading.Thread(target=poll_room_status, daemon=True)
@@ -353,10 +358,10 @@ class LobbyClient:
             while self.current_room:
                 # 檢查是否有變化
                 with room_data_lock:
-                    if current_room_data["changed"]:
+                    if shared_state["current_room_data"]["changed"]:
                         need_redraw = True
-                        current_room_data["changed"] = False
-                    room_data = current_room_data["data"]
+                        shared_state["current_room_data"]["changed"] = False
+                    room_data = shared_state["current_room_data"]["data"]
                 
                 # ⭐ 房間被解散（但不是初始狀態）
                 if room_data is None and last_room_data is not None:
@@ -406,18 +411,18 @@ class LobbyClient:
                         # 遊戲進行中 - 自動啟動遊戲
                         if room_data.get("server_port"):
                             print("\n🎮 遊戲進行中，正在連線...")
-                            polling_active = False  # 停止輪詢
+                            shared_state["polling_active"] = False
                             self._launch_game_client(room_data, auto_start=True)
-                            polling_active = True  # 恢復輪詢
+                            shared_state["polling_active"] = True
                             
-                            # ⭐ 遊戲結束後立即刷新房間狀態
+                            # 遊戲結束後立即刷新房間狀態
                             response = self.send_request("get_room_status", {"room_id": self.current_room})
                             if response and response.get("status") == "success":
                                 with room_data_lock:
-                                    current_room_data["data"] = response["data"]
-                                    current_room_data["changed"] = True
+                                    shared_state["current_room_data"]["data"] = response["data"]
+                                    shared_state["current_room_data"]["changed"] = True
                             
-                            need_redraw = True  # 遊戲結束後重繪
+                            need_redraw = True
                             continue
                         else:
                             print("⚠️  找不到 Game Server 資訊，可能遊戲已結束")
@@ -460,9 +465,9 @@ class LobbyClient:
                             is_host = room_data.get("is_host", False)
                         
                         if is_host:
-                            polling_active = False  # 暫停輪詢
+                            shared_state["polling_active"] = False  # 暫停輪詢
                             self.start_game()
-                            polling_active = True  # 恢復輪詢
+                            shared_state["polling_active"] = True  # 恢復輪詢
                             need_redraw = True
                         else:
                             # 非房主等待時，後台輪詢會自動檢測遊戲啟動
@@ -491,22 +496,19 @@ class LobbyClient:
                     elif choice == "3":
                         confirm = self.get_input("確定要離開房間嗎? (y/n)", required=False) or "n"
                         if confirm.lower() in ["yes", "y"]:
-                            polling_active = False  # 停止輪詢
                             response = self.send_request("leave_room", {"room_id": self.current_room})
                             if response["status"] == "success":
                                 print("✅ 已離開房間")
                                 self.current_room = None
                             else:
                                 print(f"❌ 離開失敗: {response.get('message', '')}")
-                                polling_active = True  # 恢復輪詢
                         need_redraw = True
                     elif choice == "4":
-                        polling_active = False  # 停止輪詢
                         return
                     else:
                         need_redraw = True
         finally:
-            polling_active = False  # 確保線程停止
+            shared_state["thread_running"] = False  # ⭐ 停止線程生命週期
             poll_thread.join(timeout=3)
     
     def browse_games(self):
