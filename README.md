@@ -108,12 +108,12 @@ v1.0
 
 正確：
 ```
-~/developer/games/tetris_game
+~/network_hw3/developer/games/tetris_game
 ```
 
 錯誤：
 ```
-~/developer/games/tetris_game/game.py
+~/network_hw3/developer/games/tetris_game/game.py
 ```
 
 ---
@@ -180,9 +180,19 @@ make
 ### 啟動
 
 ```bash
-python3 lobby_client.py localhost <LOBBY_PORT>
+cd player
 ```
 
+```bash
+python3 lobby_client.py <HOST> <LOBBY_PORT>
+```
+
+```bash
+host: linux1.cs.nycu.edu.tw
+host: linux2.cs.nycu.edu.tw
+host: linux3.cs.nycu.edu.tw
+host: linux4.cs.nycu.edu.tw
+```
 ---
 
 ### 操作方式
@@ -203,6 +213,3 @@ python3 lobby_client.py localhost <LOBBY_PORT>
 2. 啟動 Game Store Server  
 3. Developer 上架遊戲  
 4. Player 下載並遊玩  
-
----# network_hw3
-# network_hw3
