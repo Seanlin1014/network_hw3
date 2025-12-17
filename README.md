@@ -2,7 +2,7 @@ git hub連結:
 ```bash
 https://github.com/Seanlin1014/network_hw3
 ```
-# 需要安裝pygame
+### 需要安裝pygame
 
 ## 一、Server 端啟動
 
