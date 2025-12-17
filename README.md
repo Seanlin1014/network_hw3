@@ -2,9 +2,15 @@ git hub連結:
 ```bash
 https://github.com/Seanlin1014/network_hw3
 ```
+# 需要安裝pygame
+
 ## 一、Server 端啟動
 
 ### 1️. 啟動 DB Server
+
+```bash
+cd server
+```
 
 ```bash
 python3 db_server_extended.py
@@ -48,9 +54,19 @@ Lobby Server Port: <LOBBY_PORT>
 ### 1️. 啟動
 
 ```bash
-python3 developer_client.py localhost <DEV_PORT>
+cd developer
 ```
 
+```bash
+python3 developer_client.py <HOST> <DEV_PORT>
+```
+
+```bash
+host: linux1.cs.nycu.edu.tw
+host: linux2.cs.nycu.edu.tw
+host: linux3.cs.nycu.edu.tw
+host: linux4.cs.nycu.edu.tw
+```
 ---
 
 ### 2️. 上架新遊戲
